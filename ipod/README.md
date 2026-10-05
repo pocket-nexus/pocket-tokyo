@@ -89,7 +89,7 @@ The tour (`bun tools/ipod.ts bench`: the flow in `flight`, the tour at the contr
 | | Frames | Late frames | Average frame | Worst frame | Triangles | Draws |
 | --- | --- | --- | --- | --- | --- | --- |
 | Without the interface, budget 32 000 | 8 995 | 6 (0.07 %) | 16.68 ms | 38.0 ms | 19 400 to 34 100, mean 29 300 | mean 233, most 330 |
-| **With the interface, budget 24 000** | 8 974 | 30 (0.33 %) | 16.72 ms | 49.8 ms | 16 400 to 27 400, mean 22 300 | mean 205, most 309 |
+| **With the interface, budget 24 000** | 8 965 | 37 (0.41 %) | 16.73 ms | 39.8 ms | 16 600 to 27 500, mean 22 200 | mean 205, most 309 |
 
 Windows of 20 s: behind the title 3 late frames in 1 199; under the menu 3 in 1 199; a flight with a thumb held on the stick (a turn of the guest every frame) 16 in 1 183. Reading a cell takes the thread 8 to 10 ms (826 cells in 6.9 s of reading over one long run).
 
