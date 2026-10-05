@@ -1,0 +1,32 @@
+# What moves in Pocket Tokyo and what a frame draws, behind a C interface, for
+# the 3DS host in ../src. citro3d is a C library made mostly of `static inline`
+# functions, so the renderer is C and this crate is a static library.
+#
+# Standalone workspace: armv6k-nintendo-3ds needs a nightly compiler and
+# build-std (.cargo/config.toml, rust-toolchain.toml).
+#
+#   cargo build --release      (in this directory)
+
+[package]
+name = "tokyo-n3ds-core"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[lib]
+name = "tokyo_n3ds_core"
+crate-type = ["staticlib"]
+
+[dependencies]
+# The ARM11's VFP has a square root instruction, and computes doubles at half the speed of singles.
+tokyo-sim = { path = "../../crates/tokyo-sim", default-features = false, features = ["hw-sqrt", "single-float"] }
+tokyo-pack = { path = "../../crates/tokyo-pack", default-features = false }
+
+[profile.release]
+# The target defaults to unwinding; a static library in a libctru program has no unwinder.
+panic = "abort"
+opt-level = 3
+codegen-units = 1
+lto = "thin"
+
+[workspace]
