@@ -528,7 +528,7 @@ fn main() {
             // The glow of the frame on display, by night.
             let mut look_now = set.look;
             look_now.bloom_gain *= light.night;
-            if let Err(e) = post.bloom(ctx, &look_now, g::vita2d_get_current_fb(), 1024) {
+            if let Err(e) = post.bloom(ctx, &look_now, g::vita2d_get_current_fb(), 960) {
                 pocketjs_vita::vita_log(format_args!("tokyo: {e}"));
             }
             if set.profile {
