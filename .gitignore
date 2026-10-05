@@ -4,6 +4,7 @@
 /psp/target/
 /n3ds/core/target/
 /n3ds/build/
+/android/core/target/
 /dist/
 node_modules/
 
