@@ -16,6 +16,7 @@ The city is modelled once as Three.js content that runs in a browser, and a comp
 - **`crates/tokyo-cook`** is the city compiler: CityIR in, one pack and a compile receipt out, for a device profile (`profiles/vita60.json`, `psp30.json`, `n3ds30.json`).
 - **`crates/tokyo-pack`** is the pack: tables, vertex layouts and sections shared by the compiler and the runtimes.
 - **`crates/tokyo-sim`** is what moves, the same on every device: the camera and its tour, the clock and the sun, the sweep that turns heights into shadows, the traffic; and what a frame draws: the cells, blocks and regions in view at their levels of detail.
+- **`ui/`** is the interface: one PocketJS app, compiled for each device and drawn over the city by every runtime. **`crates/tokyo-interface`** is the renderer's side of it and the flow around a flight (the title, the flight, the menu).
 - **`vita/`**, **`psp/`** and **`n3ds/`** draw a pack.
 
 PocketJS (pinned in `vendor/pocketjs`) supplies the device toolchains, the dev host, the GXM kernel and packaging. It also supplies what every Pocket3D game shows: the title card at launch and **the app icon in the console's launcher** (`vendor/pocketjs/engine/pocket3d/icon/`: 144 × 80 for the XMB, 128 × 128 for the Vita's bubble, 48 × 48 and 24 × 24 for the 3DS). This repository holds no icon file; `psp/assets/pic1.png` and the Vita's LiveArea pictures are captures of this game.
@@ -125,11 +126,40 @@ A model for another landmark reports its members the same way and needs nothing 
 - Ground: (light × shadow + lamps × night) × picture, in three combiner stages over three textures. Walls: light × tint × facade by day, plus night × what the windows emit.
 - Every texture is in linear memory, and every vertex program writes all three texture coordinates: a unit that stays bound is read at them.
 
+## The interface
+
+Every 2D pixel comes from one PocketJS app, `ui/`: the title, the instruments over a flight, the menu, the hours, the settings and, on a touch panel, the controls. A renderer draws the city and no text. `ui/pocket.json` declares three presentations, and PocketJS picks one at build time from the device's modality (screens, touch, buttons):
+
+| Presentation | Devices | Screen | What is its own |
+| --- | --- | --- | --- |
+| `presentations/single.tsx` | PSP, PS Vita | 480 × 272 logical; the Vita rasters it at 2× | Lists walked by the pad under a legend; on the Vita a row also takes a tap |
+| `presentations/dual.tsx` | Nintendo 3DS | 400 × 240 over 320 × 240 | The lower screen: the area from above with the eye on it, the Menu and Tour keys, and **the day as a bar a stylus turns** |
+| `presentations/touch.tsx` | iPod touch 4 | 480 × 320 | A stick, three keys (up, down, fast), a finger on the city to turn the view; a tap on the clock opens the day as a bar |
+
+A presentation decides where things go and how large they are. What the clock, the compass tape, a list row or the map looks like is in `ui/app/parts.tsx` once, and what the lists hold is in `ui/app/flight.ts` once.
+
+- **The protocol** (`ui/app/protocol.ts`, `crates/tokyo-interface`) is JSON lines over PocketJS's `pocket.overlay` service, answered in the process: the QuickJS API on the Vita and the PSP, the `svcwire` symbols of PocketJS's C hosts on the 3DS and the iPod touch. The renderer sends the members of its state that changed since the last line; the interface sends `start`, `menu`, `tour`, `hour`, `title`, `option`, `prefs`, and from a touch panel `drive` (the stick and the held keys) and `look` (pixels a finger dragged).
+- **The flow** is `tokyo_interface::Session`, one implementation for every device, around `tokyo_sim::flight::Flight`: behind the title the tour flies; a flight is the tour's or the pad's; under the menu the pad is the interface's and the city keeps moving. With no guest on the screen (its files are missing, or it threw) the menu button hands the eye to the tour and takes it back.
+- **The numbers in flight** (the clock, the height, the speed, the heading, the eye on the map) travel as one array, `t`. Each is written to its node (`@pocketjs/framework/hot`) in a cell of fixed size: one native call and no layout. The compass is one tape that slides.
+- **The place under the view** is worked out in the interface from those numbers and the places the area file names (`areas/shiba.json`: a name, a latitude and a longitude each): the named place nearest to where the view meets the ground. A new area brings its own places.
+- **The map** is the export's own picture from above (`far_*.png`), reduced by `tools/ui.ts` to 15 m a pixel and compiled into the app. The map and the scene come from one drawing.
+- **The hour**: the interface asks for an hour (a row of the list, a point of the bar) and the clock sweeps there at 9 hours a second by the shorter way round, so the sky is seen turning. `Clock` in the settings is how fast the day runs by itself.
+- **A turn of the guest is offered 30 times a second** and taken when it is worth its cost (`tokyo_interface::Pace`): the interface says when nothing is scheduled (`idle`), and from then a turn is taken when the renderer has news, when the menu button changes, while a finger is down, and for 12 turns after any of those.
+- **Handed back to the tour**, the eye travels to the tour's path in 1.5 to 5 seconds (by the distance) and keeps above what it crosses; it does not cut there.
+- **What is kept between runs** (the settings) is one JSON text the interface hands to the renderer, which stores it as `interface.json` and hands it back at the start.
+
+`bun tools/ui.ts preview` runs each device's compiled bundle on PocketJS's UI core built for wasm, against a renderer that exists only as state (`ui/test/harness.ts`), and writes every screen as a picture to `.pocket-build/ui/preview/`. `bun tools/ui.ts test` drives the same rig through a flight and checks what the interface asked for.
+
 ## Controls
 
-Vita: left stick flies, right stick looks, L and R go down and up, ✕ flies faster. Left and right on the pad turn the clock; up and down set how fast it runs. START returns to the tour; SELECT shows the frame counters.
+| | Fly | Look | Climb, descend | Faster | Clock | Tour | Menu |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| PS Vita | left stick | right stick | R, L | ✕ | d-pad left, right | SELECT | START |
+| PSP | stick (ahead, turn) | △, ✕ | R, L | □ | d-pad left, right | SELECT | START |
+| Nintendo 3DS | Circle Pad (ahead, turn) | X, B | R, L | Y | d-pad left, right; the bar on the lower screen | SELECT; the Tour key | START; the Menu key |
+| iPod touch | the stick on the panel | a finger on the city | UP, DOWN | FAST | a tap on the clock, then the bar | the TOUR key | the key at the upper left |
 
-PSP: the stick flies ahead and turns, △ and ✕ look up and down, L and R go down and up, □ flies faster; the pad, START and SELECT as on the Vita. 3DS: the Circle Pad flies ahead and turns, X and B look up and down, L and R go down and up, Y flies faster; L + R + START leaves.
+A stick, or a finger on the city, takes the eye off the tour where it is. On the 3DS, L + R + START leaves.
 
 On the handhelds the eye keeps 30 m above what stands under it and around it. On the tour it starts to rise two seconds before a tower and comes down after it.
 
