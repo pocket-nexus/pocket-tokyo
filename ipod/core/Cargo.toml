@@ -1,0 +1,33 @@
+# What moves in Pocket Tokyo and what a frame draws, behind a C interface, for
+# the iPod touch host in ../src. The source is the 3DS core's (n3ds/core/src):
+# both hosts are C over the same `tk_*` functions, declared in n3ds/src/core.h.
+#
+# Standalone workspace: tools/ipod.ts builds it for PocketJS's
+# armv7-apple-ios target with a nightly compiler and build-std.
+
+[package]
+name = "tokyo-ipod-core"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[lib]
+name = "tokyo_ipod_core"
+path = "../../n3ds/core/src/lib.rs"
+crate-type = ["staticlib"]
+
+[dependencies]
+# The Cortex-A8's VFP has a square root instruction, and is not pipelined: doubles cost more than twice singles.
+tokyo-sim = { path = "../../crates/tokyo-sim", default-features = false, features = ["hw-sqrt", "single-float"] }
+tokyo-pack = { path = "../../crates/tokyo-pack", default-features = false }
+# The Pocket3D title card's frames: this device has no frame buffer a CPU writes, so the shell shows
+# them through a texture (`tk_card`).
+pocket3d-title = { path = "../../vendor/pocketjs/engine/pocket3d/crates/pocket3d-title" }
+
+[profile.release]
+panic = "abort"
+opt-level = 3
+codegen-units = 1
+lto = true
+
+[workspace]

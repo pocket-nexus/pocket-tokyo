@@ -127,4 +127,9 @@ void tk_shadows(const float *sun, float shade, uint16_t *swept, uint8_t *texture
 uint32_t tk_title(char *out, uint32_t cap);
 uint32_t tk_status(char *out, uint32_t cap, const TkPerf *perf, const char *extra, uint32_t extra_len);
 float tk_ground(float x, float z);
+#ifdef __APPLE__
+/* The iPod touch (ipod/core builds the same source): a frame of the Pocket3D title card as RGBA rows.
+ * 0: the card is over; 1: drawn; 2: the frame is the one drawn at tick `shown`. */
+uint32_t tk_card(uint8_t *pixels, uint32_t width, uint32_t height, uint32_t tick, uint32_t shown);
+#endif
 #endif
