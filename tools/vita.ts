@@ -71,11 +71,23 @@ export function context(argv: string[]) {
   return { title, share, appShare: resolve(share, "tokyo"), output: `pocket-tokyo-${title}`, release: !argv.includes("--debug"), standalone };
 }
 
+/**
+ * The id a build carries. A development build takes a fresh one, which the dev host tells two builds apart by.
+ * `tools/release.ts` names a release build's instead (POCKET_RELEASE_BUILD: 32 hex digits from the commit and
+ * the hashes of what the package is built from), so two builds of one commit are the same bytes.
+ */
+function buildId(): string {
+  const named = process.env.POCKET_RELEASE_BUILD;
+  if (named === undefined) return randomBytes(16).toString("hex");
+  if (!/^[0-9a-f]{32}$/.test(named)) throw new Error("POCKET_RELEASE_BUILD is not 32 hex digits");
+  return named;
+}
+
 export async function build(argv: string[], assets?: string): Promise<string> {
   const c = context(argv);
   if (!existsSync(`${vitasdk}/bin/vita-pack-vpk`)) throw new Error(`VitaSDK not found at ${vitasdk}`);
   const usb = c.standalone ? undefined : await prepareVitaUsb();
-  const nativeBuild = randomBytes(16).toString("hex");
+  const nativeBuild = buildId();
   const env = {
     ...process.env,
     PATH: `${vitasdk}/bin:${home}/.cargo/bin:${process.env.PATH ?? ""}`,
