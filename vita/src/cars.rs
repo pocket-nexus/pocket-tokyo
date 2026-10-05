@@ -8,7 +8,7 @@ use tokyo_sim::traffic::Traffic;
 use vita2d_sys as g;
 
 use crate::gpu::{self, Blend, Cull, Gpu, Param, Program, Stream, Uniforms};
-use crate::mat::{self, Mat4};
+use tokyo_sim::mat::{self, Mat4};
 
 const CAR_V: &str = include_str!("../shaders/car_v.cg");
 const SOLID_F: &str = include_str!("../shaders/solid_f.cg");

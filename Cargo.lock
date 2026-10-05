@@ -469,6 +469,7 @@ name = "tokyo-sim"
 version = "0.1.0"
 dependencies = [
  "libm",
+ "tokyo-pack",
 ]
 
 [[package]]

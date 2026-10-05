@@ -9,10 +9,12 @@ extern crate alloc;
 pub mod camera;
 #[cfg(feature = "single-float")]
 pub mod fastmath;
+pub mod mat;
 pub mod math;
 pub mod shadow;
 pub mod sky;
 pub mod tour;
 pub mod traffic;
+pub mod view;
 
 pub use camera::{Camera, Input};

@@ -14,12 +14,13 @@ use pocket_vita_gxm::program::{S16N, S8N, U16N, U8N};
 use pocket_vita_gxm::texture::{Format, Texture, Uploader, Wrap};
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
-use tokyo_pack::{self as pack, kind, Batch, Block, Cell, City, Draws, GroundLevel, Region, TexHeader, LODS, REGION_BLOCKS, SECTORS};
+use tokyo_pack::{self as pack, kind, Batch, Block, Cell, City, GroundLevel, Region, TexHeader, LODS};
 use tokyo_sim::math::*;
+use tokyo_sim::view::{self, Item};
 use vita2d_sys as g;
 
 use crate::gpu::{self, Blend, Cull, Gpu, Param, Program, Stream, Uniforms};
-use crate::mat::{self, Mat4};
+use tokyo_sim::mat::{self, Mat4};
 
 const TOP_V: &str = include_str!("../shaders/top_v.cg");
 const TOP_F: &str = include_str!("../shaders/top_f.cg");
@@ -142,16 +143,6 @@ pub struct Show {
     pub chop: u32,
 }
 
-/// A draw of this frame: indices `from..to` of a batch, in the frame of a block or of a region.
-#[derive(Clone, Copy)]
-struct Item {
-    batch: u32,
-    place: u32,
-    region: bool,
-    from: u32,
-    to: u32,
-}
-
 pub struct CityGpu {
     pub city: City,
     regions: Vec<Region>,
@@ -185,33 +176,6 @@ pub struct CityGpu {
     lists: [Vec<Item>; 3],
     pub geometry_bytes: usize,
     pub texture_bytes: usize,
-}
-
-/// The sectors of the compass whose walls can face `eye` from somewhere in a box: the first, and how many.
-/// `None`: all of them.
-fn facing(eye: V3, min: &[f32; 3], max: &[f32; 3]) -> Option<(usize, usize)> {
-    const PAD: f32 = 4.0;
-    if eye.x > min[0] - PAD && eye.x < max[0] + PAD && eye.z > min[2] - PAD && eye.z < max[2] + PAD {
-        return None;
-    }
-    // Directions from the box's corners to the eye, as angles about the direction from its middle.
-    let (cx, cz) = ((min[0] + max[0]) * 0.5, (min[2] + max[2]) * 0.5);
-    let mid = atan2(eye.z - cz, eye.x - cx);
-    let (mut lo, mut hi) = (0.0f32, 0.0f32);
-    for (x, z) in [(min[0], min[2]), (max[0], min[2]), (min[0], max[2]), (max[0], max[2])] {
-        let d = wrap_angle(atan2(eye.z - z, eye.x - x) - mid);
-        lo = lo.min(d);
-        hi = hi.max(d);
-    }
-    // A wall faces a direction when its normal is within a quarter turn of it.
-    let step = TAU / SECTORS as f32;
-    let first = floor((mid + lo - PI * 0.5 + PI) / step) as i32;
-    let last = floor((mid + hi + PI * 0.5 + PI) / step) as i32;
-    let count = (last - first + 1) as usize;
-    if count >= SECTORS {
-        return None;
-    }
-    Some((first.rem_euclid(SECTORS as i32) as usize, count))
 }
 
 /// What every scene program is compiled with.
@@ -381,128 +345,11 @@ impl CityGpu {
         for l in &mut lists {
             l.clear();
         }
+        let tables = view::Tables { city: &self.city, regions: &self.regions, blocks: &self.blocks, cells: &self.cells, batches: &self.batches, spans: &self.spans };
+        let counts = view::select(&tables, &planes, eye, &view::Reach { near: show.near, mid: show.mid, sectors: show.sectors }, &mut lists);
+        stats.places = counts.places;
+        stats.turned = counts.turned;
         let c = &self.city;
-        let n = c.cells as usize;
-        let per_place = n * n;
-        let (bnx, rnx) = (c.blocks_x as usize, c.blocks_x as usize / REGION_BLOCKS);
-        let region_side = c.block * REGION_BLOCKS as f32;
-        // A batch whole, when its box is in view.
-        let whole = |lists: &mut [Vec<Item>; 3], draws: Draws, place: u32| {
-            for bi in draws.first..draws.first + draws.count {
-                let b = &self.batches[bi as usize];
-                if mat::visible(&planes, &b.min, &b.max) {
-                    lists[b.kind as usize].push(Item { batch: bi, place, region: false, from: 0, to: b.idx_count });
-                }
-            }
-        };
-        // Batches ordered by cell: the cells that are `on`, and of the walls in each only the arc of the compass
-        // that can face the eye from the cell's box.
-        let by_cell = |lists: &mut [Vec<Item>; 3], stats: &mut Stats, draws: Draws, place: u32, region: bool, on: &[bool; 64], boxes: &[([f32; 3], [f32; 3]); 64]| {
-            for bi in draws.first..draws.first + draws.count {
-                let b = &self.batches[bi as usize];
-                let list = &mut lists[b.kind as usize];
-                let mut push = |from: u32, to: u32| {
-                    if to <= from {
-                        return;
-                    }
-                    // (a range that continues the one before it is the same draw)
-                    match list.last_mut() {
-                        Some(last) if last.batch == bi && last.to == from => last.to = to,
-                        _ => list.push(Item { batch: bi, place, region, from, to }),
-                    }
-                };
-                if b.kind != kind::WALL {
-                    let s = &self.spans[b.spans as usize..b.spans as usize + per_place + 1];
-                    for ci in 0..per_place {
-                        if on[ci] {
-                            push(s[ci], s[ci + 1]);
-                        }
-                    }
-                    continue;
-                }
-                let groups = SECTORS + 1;
-                let s = &self.spans[b.spans as usize..b.spans as usize + per_place * groups + 1];
-                for ci in 0..per_place {
-                    if !on[ci] {
-                        continue;
-                    }
-                    let at = ci * groups;
-                    let arc = if show.sectors { facing(eye, &boxes[ci].0, &boxes[ci].1) } else { None };
-                    let Some((first, count)) = arc else {
-                        push(s[at], s[at + groups]);
-                        continue;
-                    };
-                    let end = first + count;
-                    let ranges = if end <= SECTORS { [(s[at + first], s[at + end]), (s[at + SECTORS], s[at + groups])] } else { [(s[at], s[at + end - SECTORS]), (s[at + first], s[at + groups])] };
-                    stats.turned += ((s[at + groups] - s[at]) - (ranges[0].1 - ranges[0].0) - (ranges[1].1 - ranges[1].0)) / 3;
-                    push(ranges[0].0, ranges[0].1);
-                    push(ranges[1].0, ranges[1].1);
-                }
-            }
-        };
-        let half = n / REGION_BLOCKS;
-        for (ri, region) in self.regions.iter().enumerate() {
-            let (rx, rz) = (ri % rnx, ri / rnx);
-            let (x0, z0) = (c.x0 + rx as f32 * region_side, c.z0 + rz as f32 * region_side);
-            // (walls and solids may stand out of their place by the margin; batches carry their own boxes)
-            if !mat::visible(&planes, &[x0 - c.margin, region.y_min, z0 - c.margin], &[x0 + region_side + c.margin, region.y_max, z0 + region_side + c.margin]) {
-                continue;
-            }
-            // The region's cells that its far level draws: those of its blocks that are far away.
-            let mut far = [false; 64];
-            let mut far_boxes = [([0.0f32; 3], [0.0f32; 3]); 64];
-            let mut any_far = false;
-            let far_side = region_side / n as f32;
-            for k in 0..REGION_BLOCKS * REGION_BLOCKS {
-                let (kx, kz) = (k % REGION_BLOCKS, k / REGION_BLOCKS);
-                let (bx, bz) = (rx * REGION_BLOCKS + kx, rz * REGION_BLOCKS + kz);
-                let bi = bz * bnx + bx;
-                let block = &self.blocks[bi];
-                let (bx0, bz0) = (c.x0 + bx as f32 * c.block, c.z0 + bz as f32 * c.block);
-                if !mat::visible(&planes, &[bx0 - c.margin, region.y_min, bz0 - c.margin], &[bx0 + c.block + c.margin, region.y_max, bz0 + c.block + c.margin]) {
-                    continue;
-                }
-                if block.mid.count == 0 || mat::box_distance(eye, &[bx0, block.y_min, bz0], &[bx0 + c.block, block.y_max, bz0 + c.block]) >= show.mid {
-                    for j in 0..half {
-                        for i in 0..half {
-                            let ci = (kz * half + j) * n + kx * half + i;
-                            let (cx0, cz0) = (x0 + (kx * half + i) as f32 * far_side, z0 + (kz * half + j) as f32 * far_side);
-                            let cell = ([cx0, region.y_min, cz0], [cx0 + far_side, region.y_max, cz0 + far_side]);
-                            // (a cell's walls may stand a little out of it)
-                            if mat::visible(&planes, &[cell.0[0] - 30.0, cell.0[1], cell.0[2] - 30.0], &[cell.1[0] + 30.0, cell.1[1], cell.1[2] + 30.0]) {
-                                far[ci] = true;
-                                far_boxes[ci] = cell;
-                                any_far = true;
-                            }
-                        }
-                    }
-                    continue;
-                }
-                // A block within the middle distance: each of its cells in view at the near or the mid level.
-                stats.places[1] += 1;
-                let cells = &self.cells[bi * per_place..(bi + 1) * per_place];
-                let mut mid = [false; 64];
-                let mut boxes = [([0.0f32; 3], [0.0f32; 3]); 64];
-                for (ci, cell) in cells.iter().enumerate() {
-                    if cell.min[1] > cell.max[1] || !mat::visible(&planes, &cell.min, &cell.max) {
-                        continue;
-                    }
-                    if mat::box_distance(eye, &cell.min, &cell.max) < show.near {
-                        stats.places[0] += 1;
-                        whole(&mut lists, cell.near, bi as u32);
-                    } else {
-                        mid[ci] = true;
-                        boxes[ci] = (cell.min, cell.max);
-                    }
-                }
-                by_cell(&mut lists, &mut stats, block.mid, bi as u32, false, &mid, &boxes);
-            }
-            if any_far {
-                stats.places[2] += 1;
-                by_cell(&mut lists, &mut stats, region.far, ri as u32, true, &far, &far_boxes);
-            }
-        }
-
         let night = frame[7] > 0.01;
         let grid = (c.grid_w as f32 * c.grid_step, c.grid_h as f32 * c.grid_step);
         for k in [kind::TOP, kind::WALL, kind::SOLID] {
@@ -538,10 +385,7 @@ impl CityGpu {
             for item in list {
                 if (item.place, item.region) != last {
                     last = (item.place, item.region);
-                    let (nx, side) = if item.region { (rnx, region_side) } else { (bnx, c.block) };
-                    let m = if k == kind::TOP { 0.0 } else { c.margin };
-                    let origin = [c.x0 + (item.place as usize % nx) as f32 * side - m, c.y0, c.z0 + (item.place as usize / nx) as f32 * side - m];
-                    let span = [side + 2.0 * m, c.y_span, side + 2.0 * m];
+                    let (origin, span) = view::frame_of(c, item.place, item.region, k == kind::TOP);
                     mvp = mat::with_bounds(vp, origin, span);
                     map = [span[0] / grid.0, span[2] / grid.1, (origin[0] - c.grid_x0) / grid.0, (origin[2] - c.grid_z0) / grid.1];
                     if k == kind::TOP {

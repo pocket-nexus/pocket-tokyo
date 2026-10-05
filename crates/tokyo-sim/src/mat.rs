@@ -1,6 +1,6 @@
 //! 4 × 4 matrices in row-major order, the layout `mul(M, v)` reads in Cg.
 
-use tokyo_sim::math::{cos, sin, tan, V3};
+use crate::math::{cos, sin, sqrt, tan, V3};
 
 pub type Mat4 = [f32; 16];
 
@@ -75,7 +75,7 @@ pub fn visible(planes: &[[f32; 4]; 6], min: &[f32; 3], max: &[f32; 3]) -> bool {
 pub fn box_distance(p: V3, min: &[f32; 3], max: &[f32; 3]) -> f32 {
     let d = |v: f32, lo: f32, hi: f32| if v < lo { lo - v } else if v > hi { v - hi } else { 0.0 };
     let (x, y, z) = (d(p.x, min[0], max[0]), d(p.y, min[1], max[1]), d(p.z, min[2], max[2]));
-    tokyo_sim::math::sqrt(x * x + y * y + z * z)
+    sqrt(x * x + y * y + z * z)
 }
 
 /// Projects a world point to display pixels; `None` behind the eye.
