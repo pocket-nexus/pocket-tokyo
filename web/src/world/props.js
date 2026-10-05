@@ -228,6 +228,8 @@ const VENDING_BODY = [[0.92, 0.92, 0.9], [0.75, 0.1, 0.12], [0.12, 0.3, 0.62], [
 // square of the distance and with the slant, (1 + (r / h)^2)^-1.5 for a lamp h above the ground. The quad
 // reaches POOL_REACH lamp heights out; the little that is left there is taken off so the edge is at zero.
 const POOL_REACH = 2.6;
+// Where the parts of a prop sit, for a compiler that places them itself (src/pocket/export.js).
+export const PROP_PLACEMENT = { lamp: LAMP, poleLamp: POLE_LAMP, poolReach: POOL_REACH, signal: SIGNAL, vendingBody: VENDING_BODY };
 function glowTexture() {
   const N = 128, data = new Uint8Array(N * N * 4), edge = (1 + POOL_REACH ** 2) ** -1.5;
   for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) {

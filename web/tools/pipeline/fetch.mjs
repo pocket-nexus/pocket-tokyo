@@ -13,7 +13,11 @@ const area = resolveArea();
 const FORCE = process.argv.includes('--force');
 const UA = 'procedural-tokyo/0.1 (city compiler; https://github.com/)';
 const PLATEAU_API = 'https://api.plateau.reearth.io/datacatalog/citygml/m:';
+// (in the order they are tried; OVERPASS=url puts another server first)
 const OVERPASS = [
+  ...(process.env.OVERPASS ? [process.env.OVERPASS] : []),
+  'https://overpass.openstreetmap.fr/api/interpreter',
+  'https://maps.mail.ru/osm/tools/overpass/api/interpreter',
   'https://overpass-api.de/api/interpreter',
   'https://overpass.kumi.systems/api/interpreter',
   'https://overpass.private.coffee/api/interpreter',

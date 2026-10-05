@@ -1,0 +1,17 @@
+{
+  "name": "pocket-tokyo",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "setup": "git submodule update --init && bun install && bun install --cwd web",
+    "tokyo": "bun tools/tokyo.ts",
+    "dev": "bun run --cwd web dev",
+    "test": "cargo test --workspace"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.2",
+    "playwright-core": "^1.63.0",
+    "typescript": "^5.9.3"
+  }
+}
