@@ -4,7 +4,7 @@
  * resolves `ui/pocket.json` against the device's profile, picks the
  * presentation its modality asks for and writes the bundle and its pak.
  *
- *   bun tools/ui.ts <psp|vita|3ds|ipod> [--area shiba]   → .pocket-build/ui/<device>/tokyo.{js,pak}, plan.json
+ *   bun tools/ui.ts <psp|vita|3ds|ipod|android> [--area shiba]   → .pocket-build/ui/<device>/tokyo.{js,pak}, plan.json
  *   bun tools/ui.ts prepare [--area shiba]               → what the interface compiles from the area (ui/app/generated/)
  *   bun tools/ui.ts preview [device…]                    → pictures of every screen, .pocket-build/ui/preview/
  *   bun tools/ui.ts test                                 → the interface driven through a mock renderer
@@ -18,7 +18,7 @@ import { createCanvas, loadImage } from "../vendor/pocketjs/node_modules/@napi-r
 import { resolve3dsBuildPlan } from "../vendor/pocketjs/tools/3ds-profile.ts";
 import { IPODTOUCH4_DEV_HOST_ABI } from "../vendor/pocketjs/tools/ipodtouch4-profile.ts";
 
-export const DEVICES = ["psp", "vita", "3ds", "ipod"] as const;
+export const DEVICES = ["psp", "vita", "3ds", "ipod", "android"] as const;
 export type Device = (typeof DEVICES)[number];
 
 const root = resolve(import.meta.dir, "..");
@@ -48,8 +48,34 @@ function resolveIPodBuildPlan(manifest: unknown): unknown {
   if (!resolution.ok) throw new Error(`ui: ${resolution.diagnostics.map((d) => `${d.path || "/"}: ${d.message}`).join("; ")}`);
   return resolution.plan;
 }
+/**
+ * The Redmi 1S as Pocket Tokyo presents it: the panel on its side, 1280×720,
+ * with the interface at 640×360 and two samples per logical pixel. A control
+ * of 44 logical pixels is then as wide under a thumb as on the iPod touch
+ * (7 mm). The host is PocketJS's C runtime, as PocketJS's own Android host
+ * links it (host ABI 9).
+ */
+export const ANDROID_TARGET = "redmi1s-tokyo";
+const ANDROID_CONTRACTS = definePlatformContractRegistry(POCKET_CAPABILITIES, defineTargetRegistry({
+  [ANDROID_TARGET]: {
+    hostAbi: 9,
+    platform: "android",
+    form: "takeover",
+    display: { physicalViewport: [1280, 720], logicalViewports: [[640, 360]], presentations: ["native"], rasterDensity: 2 },
+    capabilities: ["input.touch", "text.glyphs.baked"],
+  },
+}));
+function resolveAndroidBuildPlan(manifest: unknown): unknown {
+  // PocketJS takes the first presentation whose modality is the device's, and two are a touch panel's: the
+  // iPod touch's 480×320 comes first in ui/pocket.json, so this device is shown the manifest without it.
+  const own = structuredClone(manifest) as { app: { presentations: { id: string }[] } };
+  own.app.presentations = own.app.presentations.filter((p) => p.id !== "touch");
+  const resolution = validateAndResolveBuildPlan(own, { target: ANDROID_TARGET }, ANDROID_CONTRACTS);
+  if (!resolution.ok) throw new Error(`ui: ${resolution.diagnostics.map((d) => `${d.path || "/"}: ${d.message}`).join("; ")}`);
+  return resolution.plan;
+}
 /** Devices outside PocketJS's public registry resolve through a profile kept with their tool. */
-const PRIVATE: Partial<Record<Device, (manifest: unknown) => unknown>> = { "3ds": resolve3dsBuildPlan, ipod: resolveIPodBuildPlan };
+const PRIVATE: Partial<Record<Device, (manifest: unknown) => unknown>> = { "3ds": resolve3dsBuildPlan, ipod: resolveIPodBuildPlan, android: resolveAndroidBuildPlan };
 
 export interface Interface {
   /** Directory holding `tokyo.js`, `tokyo.pak` and `plan.json`. */
@@ -99,8 +125,8 @@ export async function prepareInterface(device?: Device, area = "shiba"): Promise
   });
   const x0 = Math.min(...tiles.map((t) => t.x)), z0 = Math.min(...tiles.map((t) => t.z));
   const across = Math.max(...tiles.map((t) => t.x)) - x0 + 1, down = Math.max(...tiles.map((t) => t.z)) - z0 + 1;
-  // The Vita rasters two samples per logical pixel.
-  const density = device === "vita" ? 2 : 1;
+  // The Vita and the Redmi 1S raster two samples per logical pixel.
+  const density = device === "vita" || device === "android" ? 2 : 1;
   const mapPath = join(generated, "map.png");
   if (across * TILE_PX > TEXTURE || down * TILE_PX > TEXTURE) throw new Error(`ui: the area is ${across} × ${down} tiles: more than the map's picture holds`);
   const stamp = join(generated, `.map-${area}-${density}`);

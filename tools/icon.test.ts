@@ -12,7 +12,10 @@ const ROOT = resolve(import.meta.dir, "..");
 // Loaded by path at run time, as tools/vita.ts does: the module's rasterizer types come with PocketJS's own dependencies.
 // A failure here means the submodule is not checked out: `bun run setup`.
 const iconModule: string = join(ROOT, "vendor/pocketjs/tools/pocket3d-icon.ts");
-const { POCKET3D_ICON } = (await import(iconModule)) as { POCKET3D_ICON: Record<"psp" | "vita" | "n3ds" | "n3dsSmall" | "ios" | "ios2x", string> };
+const { POCKET3D_ICON, POCKET3D_ICON_ANDROID } = (await import(iconModule)) as {
+  POCKET3D_ICON: Record<"psp" | "vita" | "n3ds" | "n3dsSmall" | "ios" | "ios2x", string>;
+  POCKET3D_ICON_ANDROID: Record<"mdpi" | "hdpi" | "xhdpi" | "xxhdpi", string>;
+};
 const ICONS = join(ROOT, "vendor/pocketjs/engine/pocket3d/icon");
 const read = (path: string) => readFileSync(join(ROOT, path), "utf8");
 
@@ -24,7 +27,7 @@ function makeValue(makefile: string, name: string, values: Record<string, string
 }
 
 test("the PocketJS pin holds the icon of each console", () => {
-  for (const file of [POCKET3D_ICON.psp, POCKET3D_ICON.vita, POCKET3D_ICON.n3ds, POCKET3D_ICON.n3dsSmall, POCKET3D_ICON.ios, POCKET3D_ICON.ios2x]) {
+  for (const file of [POCKET3D_ICON.psp, POCKET3D_ICON.vita, POCKET3D_ICON.n3ds, POCKET3D_ICON.n3dsSmall, POCKET3D_ICON.ios, POCKET3D_ICON.ios2x, ...Object.values(POCKET3D_ICON_ANDROID)]) {
     expect(existsSync(file), file).toBe(true);
     expect(resolve(file).startsWith(ICONS), file).toBe(true);
   }
@@ -85,6 +88,17 @@ test("iPod touch: the bundle gets PocketJS's two files, and SpringBoard adds no 
   expect(tool).toContain(`cpSync(POCKET3D_ICON.ios, join(bundle, "Icon.png"))`);
   expect(tool).toContain(`cpSync(POCKET3D_ICON.ios2x, join(bundle, "Icon@2x.png"))`);
   expect(tool).toContain(`UIPrerenderedIcon: "<true/>"`);
+});
+
+test("Android: the package gets PocketJS's file of each density, as it is, and the manifest names it", () => {
+  const tool = read("tools/android.ts");
+  expect(tool).toContain("tools/pocket3d-icon.ts");
+  expect(tool).toContain("for (const [density, file] of Object.entries(POCKET3D_ICON_ANDROID))");
+  expect(tool).toContain("cpSync(file, join(res, `drawable-${density}`, \"icon.png\"))");
+  // aapt would encode a PNG again: `--no-crunch` leaves the bytes PocketJS's.
+  expect(tool).toMatch(/"aapt"\), "package", "-f", "--no-crunch"/);
+  expect(read("android/AndroidManifest.xml")).toContain(`android:icon="@drawable/icon"`);
+  expect(Object.keys(POCKET3D_ICON_ANDROID)).toEqual(["mdpi", "hdpi", "xhdpi", "xxhdpi"]);
 });
 
 test("the browser tab: the site gets PocketJS's file as its icon", () => {

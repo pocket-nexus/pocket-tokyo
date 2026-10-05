@@ -30,13 +30,16 @@ import { gzipSync } from "node:zlib";
 import { join, resolve } from "node:path";
 import { POCKET3D_ICON } from "../vendor/pocketjs/tools/pocket3d-icon.ts";
 import { cutPack, stagePocket3dWeb } from "../vendor/pocketjs/tools/pocket3d-web.ts";
-import { compileInterface, DEVICES } from "./ui.ts";
+import { compileInterface, type Device } from "./ui.ts";
 
 const ROOT = resolve(import.meta.dir, "..");
 const CRATE = join(ROOT, "wgpu");
 const BUILD = join(ROOT, ".pocket-build/wgpu");
 const SITE = join(BUILD, "site");
 const DIST = join(BUILD, "dist");
+// The handhelds the page shows (`DEVICES` in wgpu/page/main.js, `SHAPES` in wgpu/src/app.rs): the interface
+// is compiled for these. tools/ui.ts knows more devices than a tab shows.
+const SHOWN = ["psp", "vita", "3ds", "ipod"] as const satisfies readonly Device[];
 // What the host a build is deployed to allows (Pocket Studio's site deployments): the size of a file, the
 // files and the bytes of a deployment, and the top-level names it keeps for itself.
 const HOST = { file: 32 << 20, files: 4000, bytes: 1 << 30, reserved: ["play", "runtime"] };
@@ -70,7 +73,7 @@ async function build() {
   await stagePocket3dWeb(SITE);
   cpSync(POCKET3D_ICON.ios2x, join(SITE, "icon.png"));
   // The game's interface for each device, as its own build compiles it, with the plan PocketJS resolved.
-  for (const device of DEVICES) {
+  for (const device of SHOWN) {
     const built = await compileInterface(device, area);
     mkdirSync(join(SITE, "ui", device), { recursive: true });
     for (const file of ["tokyo.js", "tokyo.pak", "plan.json"]) cpSync(join(built.directory, file), join(SITE, "ui", device, file));

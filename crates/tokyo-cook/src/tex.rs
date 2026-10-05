@@ -108,10 +108,15 @@ impl Cache {
                 return bytes;
             }
         }
-        let fmt = if format == tex_format::BC3 { texpresso::Format::Bc3 } else { texpresso::Format::Bc1 };
-        let mut out = vec![0u8; fmt.compressed_size(img.w, img.h)];
-        let params = texpresso::Params { algorithm: texpresso::Algorithm::ClusterFit, ..Default::default() };
-        fmt.compress(&img.rgba, img.w, img.h, params, &mut out);
+        let out = if format == tex_format::ETC2 || format == tex_format::ETC2A {
+            crate::etc1::rows(img, format == tex_format::ETC2A)
+        } else {
+            let fmt = if format == tex_format::BC3 { texpresso::Format::Bc3 } else { texpresso::Format::Bc1 };
+            let mut out = vec![0u8; fmt.compressed_size(img.w, img.h)];
+            let params = texpresso::Params { algorithm: texpresso::Algorithm::ClusterFit, ..Default::default() };
+            fmt.compress(&img.rgba, img.w, img.h, params, &mut out);
+            out
+        };
         let _ = std::fs::write(&path, &out);
         out
     }

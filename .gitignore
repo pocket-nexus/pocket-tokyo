@@ -4,6 +4,7 @@
 /psp/target/
 /n3ds/core/target/
 /n3ds/build/
+/android/core/target/
 /wgpu/target/
 /dist/
 node_modules/
@@ -17,3 +18,6 @@ node_modules/
 /ui/app/generated/
 /ui/.pocket/
 /ui/app/images.json
+
+# The Pocket Studio project this checkout uploads its packages to (pocket-studio register)
+.pocket-studio.json

@@ -2,7 +2,7 @@
 resolver = "2"
 members = ["crates/tokyo-pack", "crates/tokyo-sim", "crates/tokyo-cook", "crates/tokyo-interface"]
 # The device apps build with their own toolchains and lockfiles.
-exclude = ["vita", "psp", "n3ds", "vendor", "web", "wgpu"]
+exclude = ["vita", "psp", "n3ds", "android", "vendor", "web", "wgpu"]
 
 [profile.release]
 opt-level = 3

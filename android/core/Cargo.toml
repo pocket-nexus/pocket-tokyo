@@ -1,0 +1,36 @@
+# Pocket Tokyo on the Redmi 1S: the city on an Adreno 305 through OpenGL ES 3.0,
+# behind the C interface the shell in ../src calls (`tk_*`, declared in
+# ../src/core.h). The pack, what a frame draws, the shadows' sweep, the traffic,
+# the flow around the flight and the interface's channel are here; the window,
+# the touches and the PocketJS guest are the shell's.
+#
+# Standalone workspace: tools/android.ts builds it for armv7-linux-androideabi
+# with the nightly compiler PocketJS's UI core is built with.
+
+[package]
+name = "tokyo-android-core"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[lib]
+name = "tokyo_android_core"
+crate-type = ["staticlib"]
+
+[dependencies]
+tokyo-sim = { path = "../../crates/tokyo-sim" }
+tokyo-pack = { path = "../../crates/tokyo-pack" }
+# The flow around the flight, and the interface's channel as the C symbols PocketJS's guest driver calls (svcwire.h).
+tokyo-interface = { path = "../../crates/tokyo-interface", features = ["wire"] }
+# The Pocket3D title card's frames, which the shell shows through a texture (`tk_card`).
+pocket3d-title = { path = "../../vendor/pocketjs/engine/pocket3d/crates/pocket3d-title" }
+
+[profile.release]
+panic = "abort"
+opt-level = 3
+codegen-units = 1
+# Whole-program: the library keeps Rust's runtime to itself and links beside PocketJS's UI core,
+# which is built the same way.
+lto = true
+
+[workspace]
