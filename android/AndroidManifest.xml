@@ -1,7 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- Pocket Tokyo as an Android app: one NativeActivity, no Java. tools/android.ts
-     fills in the version. `debuggable` lets a development run replace the engine
-     and the pack in the app's own data through run-as. -->
+     fills in the version and `debuggable`: true lets a development run replace
+     the engine and the pack in the app's own data through run-as; a release
+     package is false. -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="dev.pocketnexus.tokyo"
     android:versionCode="@VERSION_CODE@"
@@ -11,7 +12,7 @@
     <uses-feature android:name="android.hardware.touchscreen.multitouch" android:required="true" />
     <application
         android:allowBackup="false"
-        android:debuggable="true"
+        android:debuggable="@DEBUGGABLE@"
         android:hasCode="false"
         android:icon="@drawable/icon"
         android:label="Pocket Tokyo">
