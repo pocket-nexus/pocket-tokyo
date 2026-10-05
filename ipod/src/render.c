@@ -575,7 +575,6 @@ void render_frame(const TkView *view, const TkItem *const lists[TK_KINDS], const
   float sky[16];
   multiply(sky, vp, there);
   const Program *p = use(SKY, view, 0);
-  glUniformMatrix4fv(p->mvp, 1, GL_FALSE, sky);
   glDisable(GL_DEPTH_TEST);
   glDisable(GL_CULL_FACE);
   glBindBuffer(GL_ARRAY_BUFFER, 0);
@@ -584,6 +583,19 @@ void render_frame(const TkView *view, const TkItem *const lists[TK_KINDS], const
   glDisableVertexAttribArray(1);
   glEnableVertexAttribArray(2);
   glDisableVertexAttribArray(3);
+  // First the haze over the whole target, as two triangles: what nothing of the scene covers (under the dome's
+  // lowest ring, past the city's edge) then has a program too, and with it the picture laid over the frame. The
+  // GPU shades a pixel for the last opaque triangle on it, so the two cost what they alone show.
+  static const float whole[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+  TkSkyVertex ground[4] = {{{-1, -1, 0}, {0}}, {{1, -1, 0}, {0}}, {{-1, 1, 0}, {0}}, {{1, 1, 0}, {0}}};
+  for (int i = 0; i < 4; i++)
+    for (int c = 0; c < 3; c++)
+      ground[i].color[c] = (uint8_t)(fminf(fmaxf(view->haze[c], 0.0f), 1.0f) * 255.0f + 0.5f);
+  glUniformMatrix4fv(p->mvp, 1, GL_FALSE, whole);
+  glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof *ground, ground->pos);
+  glVertexAttribPointer(2, 4, GL_UNSIGNED_BYTE, GL_TRUE, sizeof *ground, ground->color);
+  glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+  glUniformMatrix4fv(p->mvp, 1, GL_FALSE, sky);
   glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof *sky_vertices, sky_vertices->pos);
   glVertexAttribPointer(2, 4, GL_UNSIGNED_BYTE, GL_TRUE, sizeof *sky_vertices, sky_vertices->color);
   glDrawElements(GL_TRIANGLES, TK_DOME_INDICES, GL_UNSIGNED_SHORT, sky_indices);

@@ -49,8 +49,10 @@
 #define TOKYO_BUILD "development"
 #endif
 // Triangles a frame may draw: the distances of the levels of detail follow it.
+// 32 000 hold a refresh a frame without the interface; reading it at every
+// pixel and redrawing it 11 times a second take 8 000 of them.
 #ifndef BUDGET
-#define BUDGET 32000
+#define BUDGET 24000
 #endif
 
 // Guest turns a second at most: one per frame, so the stick and the keys reach
