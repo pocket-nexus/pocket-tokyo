@@ -8,7 +8,7 @@ This repository is private until its owner says otherwise. Compiled city data ke
 | --- | --- | --- | --- |
 | PS Vita | 960 × 544, 4× MSAA, shadows that follow the clock, night glow | GXM, programs compiled on the device | 150 s of the tour from 15:36 to 20:04, with the traffic: 9 010 frames, **0 late**, worst frame 16.9 ms, 90 000 to 198 000 triangles a frame (mean 162 000), 225 draws |
 | PSP | 480 × 272, shadows that follow the clock | GE, fixed function, one display list a frame | 150 s of the tour with the interface over it (PSPLINK, 333 MHz): 4 500 frames, **0 late**, worst frame 40.2 ms, 22 700 to 42 000 triangles a frame (mean 37 500), 1 252 draws |
-| Nintendo 3DS | 400 × 240 on the upper screen, shadows that follow the clock; the clock and the frame in numbers on the lower one | PICA200: four vertex programs, three combiner stages | Old 3DS, one view of the build before the landmark models: 30 frames a second, 44 000 triangles, 289 draws, 10.7 ms of CPU, 18.6 ms of GPU. The tour is not benched on the console yet |
+| Nintendo 3DS | 400 × 240 on the upper screen, shadows that follow the clock; the area from above and the day as a bar on the lower one | PICA200: four vertex programs, three combiner stages | Old 3DS, 90 s of the tour with the interface on both screens: 2 728 frames, **0 late**, 21 400 to 53 600 triangles a frame (mean 40 000), 276 draws, 17.1 ms of CPU and 17.5 ms of GPU a frame |
 
 The city is modelled once as Three.js content that runs in a browser, and a compiler lowers it to what one console draws:
 
