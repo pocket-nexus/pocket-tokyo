@@ -2,8 +2,10 @@
 # the machine that builds it (Metal), where a frame can be written to a file.
 #
 # The city, the flight and what a frame draws are the handheld core's
-# (core/, the source of n3ds/core); kernel/ is everything that is not this
-# game's: the GPU device and its targets, 16-bit pictures, ranges of a file.
+# (core/, the source of n3ds/core). Everything that is not this game's is
+# PocketJS's browser kernel (vendor/pocketjs/devices/web/pocket-web-wgpu): the
+# GPU device and its screens, the interface's overlay pass, 16-bit pictures,
+# ranges of a pack.
 #
 #   bun tools/wgpu.ts build | serve | shot | check     (from the repository root)
 
@@ -26,7 +28,7 @@ tokyo-core = { path = "core" }
 tokyo-pack = { path = "../crates/tokyo-pack", default-features = false }
 tokyo-sim = { path = "../crates/tokyo-sim", default-features = false }
 tokyo-interface = { path = "../crates/tokyo-interface", default-features = false }
-pocket-web-wgpu = { path = "kernel" }
+pocket-web-wgpu = { path = "../vendor/pocketjs/devices/web/pocket-web-wgpu" }
 bytemuck = { version = "1", features = ["derive"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
@@ -49,5 +51,5 @@ panic = "abort"
 opt-level = 1
 
 [workspace]
-members = ["core", "kernel"]
+members = ["core"]
 resolver = "2"

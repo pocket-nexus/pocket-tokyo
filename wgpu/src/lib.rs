@@ -6,7 +6,8 @@
 //! (`tokyo_core`, the source of `n3ds/core`); the pack is the iPod touch's
 //! (`profiles/ipod60.json`), read over HTTP a range at a time ([`pack`]); the
 //! programs are the iPod touch's, in WGSL ([`render`]). [`app`] is the shell
-//! around them. What is not this game's is `pocket_web_wgpu` (`kernel/`).
+//! around them. What is not this game's is PocketJS's browser kernel,
+//! `pocket_web_wgpu` (`vendor/pocketjs/devices/web/pocket-web-wgpu`).
 
 pub mod app;
 pub mod pack;

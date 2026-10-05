@@ -29,6 +29,7 @@ import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statS
 import { gzipSync } from "node:zlib";
 import { join, resolve } from "node:path";
 import { POCKET3D_ICON } from "../vendor/pocketjs/tools/pocket3d-icon.ts";
+import { cutPack, stagePocket3dWeb } from "../vendor/pocketjs/tools/pocket3d-web.ts";
 import { compileInterface, DEVICES } from "./ui.ts";
 
 const ROOT = resolve(import.meta.dir, "..");
@@ -39,10 +40,6 @@ const DIST = join(BUILD, "dist");
 // What the host a build is deployed to allows (Pocket Studio's site deployments): the size of a file, the
 // files and the bytes of a deployment, and the top-level names it keeps for itself.
 const HOST = { file: 32 << 20, files: 4000, bytes: 1 << 30, reserved: ["play", "runtime"] };
-const POCKET = join(ROOT, "vendor/pocketjs");
-const TITLE = join(POCKET, "engine/pocket3d/crates/pocket3d-title/web");
-// The kernel's side of the page (wgpu/kernel/web): nothing in these names the game.
-const KERNEL = ["pocket3d-shell.js", "pocket3d-interface.js", "pocket3d-realm.html", "pocket3d-realm.js", "pocket3d-controls.js", "pocket3d-stage.js"];
 
 const [command, ...rest] = process.argv.slice(2);
 const option = (flag: string, fallback = "") => {
@@ -67,21 +64,11 @@ async function build() {
   mkdirSync(join(SITE, "pkg"), { recursive: true });
   await $`wasm-bindgen --target web --no-typescript --out-dir ${join(SITE, "pkg")} ${join(CRATE, "target/wasm32-unknown-unknown/release/tokyo_wgpu.wasm")}`;
   for (const file of ["index.html", "main.js", "sweep.js"]) cpSync(join(CRATE, "page", file), join(SITE, file));
-  for (const file of KERNEL) cpSync(join(CRATE, "kernel/web", file), join(SITE, file));
-  // The Pocket3D title card and the icon of the tab, as PocketJS ships them.
-  for (const file of ["pocket3d-title.js", "art.js"]) cpSync(join(TITLE, file), join(SITE, file));
+  // What the page loads from PocketJS's browser kernel (vendor/pocketjs/devices/web/pocket-web-wgpu), as
+  // PocketJS stages it: the page's modules, the Pocket3D title card, the realm of the interface's guest
+  // with the UI core, and the host helpers of the framework. Then the icon of the tab.
+  await stagePocket3dWeb(SITE);
   cpSync(POCKET3D_ICON.ios2x, join(SITE, "icon.png"));
-
-  // The interface: PocketJS's UI core for a browser and its binding, as PocketJS ships them (the core is a
-  // build output of the pin, as for `bun tools/ui.ts preview`), and what a host needs of its framework to
-  // hand a guest its contacts, in one module.
-  if (!existsSync(join(POCKET, "hosts/web/pocketjs.wasm"))) await $`bun tools/wasm.ts`.cwd(POCKET);
-  for (const file of ["pocketjs.wasm", "wasm-ops.js"]) cpSync(join(POCKET, "hosts/web", file), join(SITE, file));
-  mkdirSync(join(BUILD, "gen"), { recursive: true });
-  writeFileSync(join(BUILD, "gen/pocketjs-host.ts"), `export { __packTouch, createTouchHitFacts } from ${JSON.stringify(join(POCKET, "framework/src/touch.ts"))};\nexport { PROP, BTN } from ${JSON.stringify(join(POCKET, "contracts/spec/spec.ts"))};\n`);
-  const host = await Bun.build({ entrypoints: [join(BUILD, "gen/pocketjs-host.ts")], format: "esm", target: "browser" });
-  if (!host.success) throw new Error(`pocketjs-host: ${host.logs.join("; ")}`);
-  writeFileSync(join(SITE, "pocketjs-host.js"), await host.outputs[0]!.text());
   // The game's interface for each device, as its own build compiles it, with the plan PocketJS resolved.
   for (const device of DEVICES) {
     const built = await compileInterface(device, area);
@@ -122,18 +109,11 @@ async function dist(pieceBytes: number) {
     mkdirSync(join(DIST, "app", id, file, ".."), { recursive: true });
     writeFileSync(join(DIST, "app", id, file), bytes);
   }
-  // The pack in pieces of one size, and the manifest that lists them (pocket_web_wgpu::source::Manifest).
-  const whole = readFileSync(pack);
-  const hash = sha256(whole);
-  mkdirSync(join(DIST, "pack"));
-  const pieces: string[] = [];
-  for (let at = 0; at < whole.length; at += pieceBytes) {
-    const piece = whole.subarray(at, at + pieceBytes);
-    pieces.push(`${sha256(piece).slice(0, 20)}.bin`);
-    writeFileSync(join(DIST, "pack", pieces.at(-1)!), piece);
-  }
-  const manifest = `pack/${hash.slice(0, 16)}.json`;
-  writeFileSync(join(DIST, manifest), JSON.stringify({ pack: "pocket-pack-pieces/1", bytes: whole.length, piece: pieceBytes, sha256: hash, pieces }, null, 1));
+  // The pack in pieces of one size, each named by its hash, and the manifest that lists them
+  // (pocket_web_wgpu::source::Manifest), named by the pack's.
+  const cut = cutPack(pack, join(DIST, "pack"), pieceBytes);
+  const manifest = `pack/${cut.manifest}`;
+  const [pieces, hash] = [cut.pieces, cut.sha256];
   // The page names its build and its pack.
   let page = readFileSync(join(SITE, "index.html"), "utf8");
   for (const [from, to] of [[`<meta name="pocket-pack" content="city.pack">`, `<meta name="pocket-pack" content="${manifest}">`], [`src="main.js"`, `src="app/${id}/main.js"`]] as const) {
@@ -143,10 +123,7 @@ async function dist(pieceBytes: number) {
   writeFileSync(join(DIST, "index.html"), page);
   cpSync(join(SITE, "icon.png"), join(DIST, "icon.png"));
 
-  // What was written is the pack, and is what the host takes.
-  const again = new Bun.CryptoHasher("sha256");
-  for (const name of pieces) again.update(readFileSync(join(DIST, "pack", name)));
-  if (again.digest("hex") !== hash) throw new Error("the pieces do not make up the pack");
+  // What was written is what the host takes.
   const all = files(DIST).map((file) => ({ file, bytes: statSync(join(DIST, file)).size }));
   const total = all.reduce((sum, f) => sum + f.bytes, 0);
   const largest = all.reduce((a, b) => (b.bytes > a.bytes ? b : a));
@@ -387,10 +364,12 @@ if (command === "cook") {
         turnsPerSecond: round(d("turns") / span),
         turnMs: round(d("turnMs") / Math.max(1, d("turns"))),
         redrawsPerSecond: round(d("redraws") / span),
-        // (a redraw: the UI core draws the interface twice, `drawMs`; the rest is what it covers and the upload)
+        // (a redraw: the UI core draws the interface once with its alpha, `drawMs`; the rest is the upload)
         redrawMs: round(d("redrawMs") / Math.max(1, d("redraws"))),
         drawMs: round(d("drawMs") / Math.max(1, d("redraws"))),
-        lowerMs: round(d("lowerMs") / Math.max(1, d("turns"))),
+        // (the second screen is drawn when its own draw hash changes)
+        lowersPerSecond: round(d("lowers") / span),
+        lowerMs: round(d("lowerMs") / Math.max(1, d("lowers"))),
         drawn: status.drawn,
         draws: status.draws,
         late: status.late,

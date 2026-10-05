@@ -1,7 +1,9 @@
 // Pocket Tokyo in a browser tab: the page around the wgpu renderer (../src,
 // built to pkg/) and the game's own interface (../../ui, one bundle a device,
 // compiled by tools/ui.ts), which a realm of the page runs on PocketJS's UI
-// core and the renderer lays over the city.
+// core and the renderer lays over the city. The pocket3d-*.js modules, the
+// realm and the title card are PocketJS's browser kernel
+// (vendor/pocketjs/devices/web/pocket-web-wgpu), staged beside this file.
 //
 // The page shows one of the handhelds the city runs on: its screens at their
 // own size, its presentation of the interface, its buttons. The Pocket3D title
@@ -22,7 +24,7 @@
 //
 // `window.pocketTokyo` is the running city, for a console and for tools/wgpu.ts.
 import { playTitle } from "./pocket3d-title.js";
-import { frames, hasWebGPU } from "./pocket3d-shell.js";
+import { frames, hasWebGPU, titleCard } from "./pocket3d-shell.js";
 import { openInterface, screens } from "./pocket3d-interface.js";
 import { createControls, legend } from "./pocket3d-controls.js";
 import { choices, createStage } from "./pocket3d-stage.js";
@@ -58,8 +60,10 @@ function kept() {
 }
 
 async function start() {
-  // The card is the first picture of every launch, and covers the page while the city is read.
-  const title = playTitle();
+  // The card is the first picture of every launch, and covers the page while the city is read. No frame is
+  // drawn while it plays; the blocks' pictures are read from the moment the city flies.
+  let pump = () => {};
+  const title = titleCard(playTitle, () => pump());
   if (!hasWebGPU()) {
     await title;
     say("This browser has no WebGPU, which Pocket Tokyo draws with.");
@@ -80,11 +84,12 @@ async function start() {
   let shape = JSON.parse(tokyo.reshape(first.name, canvas.width, canvas.height, number("samples"), number("budget"), number("hz")));
   // (the flow waits at the title for a guest: one is on its way)
   tokyo.interface_opened();
+  pump = () => tokyo.pump();
 
-  // What a frame's parts cost, in milliseconds summed since the start: the guest's turns, and the redraws
-  // of its picture (`redrawMs`: the UI core's two drawings, `drawMs` of it, then what they cover and the
-  // upload), and the second screen's.
-  const timing = { turns: 0, turnMs: 0, redraws: 0, redrawMs: 0, drawMs: 0, lowerMs: 0 };
+  // What a frame's parts cost, in milliseconds summed since the start: the guest's turns, the redraws of
+  // its picture (`redrawMs`: the UI core's drawing, `drawMs` of it, then the upload), and the second
+  // screen's redraws.
+  const timing = { turns: 0, turnMs: 0, redraws: 0, redrawMs: 0, drawMs: 0, lowers: 0, lowerMs: 0 };
   // (milliseconds from the page's start: the city read, the interface up, the first frame, the first of the city)
   const report = { tokyo, device: () => device.id, shape: () => shape, ready: 0, interfaceReady: 0, firstFrame: 0, firstCity: 0, frames: 0, failure: "", timing };
   window.pocketTokyo = report;
@@ -137,7 +142,7 @@ async function start() {
     tokyo.overlay_hide();
     if (query.get("interface") === "off") return tokyo.control("mode=flight");
     try {
-      const opened = await openInterface({ realm: beside("pocket3d-realm.html"), wasm: beside("pocketjs.wasm"), bundle: beside(`ui/${next.id}/tokyo.js`), pak: beside(`ui/${next.id}/tokyo.pak`), plan });
+      const opened = await openInterface({ realm: beside("app-instance.html"), wasm: beside("pocketjs.wasm"), bundle: beside(`ui/${next.id}/tokyo.js`), pak: beside(`ui/${next.id}/tokyo.pak`), plan });
       // (another device was chosen while this one's interface was read)
       if (device !== next) return opened.close();
       tokyo.interface_opened();
@@ -168,17 +173,20 @@ async function start() {
       for (const said of ui.drain()) tokyo.say(said);
       const turnedAt = performance.now();
       if (ui.changed()) {
-        const picture = ui.pictures();
-        tokyo.overlay(picture.black, picture.white, picture.width, picture.height);
+        // One drawing by the UI core, with its alpha, and the upload.
+        const picture = ui.picture();
+        const drew = performance.now();
+        tokyo.overlay(picture.pixels, picture.width, picture.height);
         timing.redraws++;
-        timing.drawMs += picture.drawMs;
+        timing.drawMs += drew - turnedAt;
         timing.redrawMs += performance.now() - turnedAt;
       }
       const drawn = performance.now();
-      if (lower) {
+      if (lower && ui.lowerChanged()) {
         // The second screen is the interface's alone: its pixels go to its canvas as they are.
         lower.data.set(ui.lower());
         stage.lower.putImageData(lower, 0, 0);
+        timing.lowers++;
         timing.lowerMs += performance.now() - drawn;
       }
       timing.turns++;
@@ -199,16 +207,8 @@ async function start() {
     if (!report.firstCity && tokyo.flies()) report.firstCity = performance.now() - started;
   };
 
-  // While the card plays no frame is drawn; the blocks' pictures are read from the moment the city flies.
-  let playing = true;
-  const pump = () => {
-    if (!playing) return;
-    tokyo.pump();
-    requestAnimationFrame(pump);
-  };
-  requestAnimationFrame(pump);
   await title;
-  playing = false;
+  pump = () => {};
   canvas.hidden = false;
   stage.fit();
   const loop = frames(() => shape.hz, (now) => {

@@ -148,10 +148,10 @@ impl Tokyo {
         self.app.say(line);
     }
 
-    /// The interface's picture as its rasterizer drew it over black and over white (`width` by `height`
-    /// RGBA rows): it is laid over every frame from the next on.
-    pub fn overlay(&mut self, over_black: &[u8], over_white: &[u8], width: u32, height: u32) -> Result<(), JsError> {
-        self.app.overlay.write_pair(&self.app.gpu, over_black, over_white, width, height).map_err(|e| JsError::new(&e))
+    /// The interface's picture as PocketJS's UI core rasterizes it with its alpha (`width` by `height` rows
+    /// of premultiplied RGBA): it is laid over every frame from the next on.
+    pub fn overlay(&mut self, pixels: &[u8], width: u32, height: u32) -> Result<(), JsError> {
+        self.app.overlay.write(&self.app.gpu, pixels, width, height).map_err(|e| JsError::new(&e))
     }
 
     /// Nothing is laid over the frames until a picture is handed in again: the guest is being replaced.
