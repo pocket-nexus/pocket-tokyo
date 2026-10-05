@@ -1,0 +1,23 @@
+// The ground and every roof: a picture from above, lit.
+
+void main(
+    float3 aPosition,
+    float2 aAo,
+    float3 aNormal,
+    uniform float4x4 uMvp,
+    uniform float4 uMap,
+    uniform float4 uFrame[4],
+    out float4 oPosition : POSITION,
+    out float2 oUv : TEXCOORD0,
+    out float2 oMap : TEXCOORD1,
+    out float oHeight : TEXCOORD2,
+    out float4 oLight : COLOR0,
+    out float4 oHaze : COLOR1)
+{
+    oPosition = mul(uMvp, float4(aPosition, 1.0));
+    oUv = aPosition.xz;
+    oMap = aPosition.xz * uMap.xy + uMap.zw;
+    oHeight = aPosition.y;
+    oLight = float4((uFrame[1].rgb + uFrame[2].rgb * aNormal.y) * aAo.x, max(dot(aNormal, uFrame[0].xyz), 0.0));
+    oHaze = float4(0.0, 0.0, 0.0, haze_of(oPosition.w, uFrame));
+}

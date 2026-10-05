@@ -1,0 +1,18 @@
+uniform sampler2D uFacade;
+uniform sampler2D uShadow;
+uniform sampler2D uNight;
+// [0] rgb: the haze; [1] rgb: the sun
+uniform float4 uLook[2];
+
+half4 main(float2 vUv : TEXCOORD0, float2 vMap : TEXCOORD1, float2 vHeight : TEXCOORD2, half4 vLight : COLOR0, half4 vTint : COLOR1) : COLOR
+{
+    half lit = (half)saturate((vHeight.x - tex2D(uShadow, vMap).r) * SHADOW_K + 1.0);
+    half4 t = (half4)tex2D(uFacade, vUv);
+    // A wall texel takes the building's colour; a window keeps its own.
+    half3 c = t.rgb * lerp(half3(1.0, 1.0, 1.0), vTint.rgb * (half)WALL_GAIN, t.a) * (vLight.rgb + (half3)uLook[1].rgb * (vLight.a * lit)) * (half)LIGHT_SCALE;
+#ifdef NIGHT
+    c += (half3)tex2D(uNight, vUv).rgb * (half)vHeight.y;
+#endif
+    c = lerp(c, (half3)uLook[0].rgb, vTint.a);
+    return half4(c, 1.0);
+}

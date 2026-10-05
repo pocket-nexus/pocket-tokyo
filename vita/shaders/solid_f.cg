@@ -1,0 +1,11 @@
+uniform sampler2D uShadow;
+// [0] rgb: the haze; [1] rgb: the sun
+uniform float4 uLook[2];
+
+half4 main(float2 vMap : TEXCOORD0, float2 vHeight : TEXCOORD1, half4 vLight : COLOR0, half4 vTint : COLOR1) : COLOR
+{
+    half lit = (half)saturate((vHeight.x - tex2D(uShadow, vMap).r) * SHADOW_K + 1.0);
+    half3 c = vTint.rgb * ((vLight.rgb + (half3)uLook[1].rgb * (vLight.a * lit)) * (half)LIGHT_SCALE + (half)vHeight.y);
+    c = lerp(c, (half3)uLook[0].rgb, vTint.a);
+    return half4(c, 1.0);
+}
