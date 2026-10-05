@@ -837,6 +837,13 @@ fn run() -> Result<(), String> {
             } else {
                 landmark::model(l, mark_rule(lod), lod == 0)
             };
+            // (this target's program is the Vita's, 1.6 times a face's alpha: under its floodlights a member
+            // then shines as the reference's own steel does in the nearest level, `buildings.rs`)
+            if target == Target::Gles3 {
+                for s in tris.iter_mut().filter(|s| s.color[3] == landmark::FLOODLIT) {
+                    s.color[3] = 120;
+                }
+            }
             tris.sort_by_key(|s| city::solid_sector(&s.p));
             let first = out.batches.len();
             for c in chunks(&tris, |s| frame.solid(s)) {
