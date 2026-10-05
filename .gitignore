@@ -1,0 +1,13 @@
+# Build output
+/target/
+/vita/target/
+/psp/target/
+/n3ds/core/target/
+/n3ds/build/
+/dist/
+node_modules/
+
+# CityIR, cooked packs, texture cache, USB share, validation captures
+/.pocket-build/
+
+.DS_Store
