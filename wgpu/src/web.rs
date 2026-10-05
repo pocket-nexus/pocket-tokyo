@@ -38,7 +38,8 @@ pub struct Tokyo {
 #[wasm_bindgen]
 impl Tokyo {
     /// Reads the head of the pack at `url` and starts the flight on `canvas`, which has the shape's size in
-    /// pixels. One to a page.
+    /// pixels. One to a page. `url` names the pack's file, on a server that answers byte ranges, or the
+    /// manifest (`.json`) of a pack cut into pieces (`pocket_web_wgpu::source`).
     ///
     /// `worker` runs `page/sweep.js` and sweeps the shadows; without one, or when it fails, the frames do.
     pub async fn start(canvas: web_sys::HtmlCanvasElement, url: String, shape: String, worker: Option<web_sys::Worker>) -> Result<Tokyo, JsError> {
@@ -52,7 +53,8 @@ impl Tokyo {
                 None => Box::new(SweepHere::new(tables)),
             }
         };
-        let app = App::start(gpu, screen, shape, Source::new(&url), sweeper).await.map_err(|e| JsError::new(&e))?;
+        let source = Source::open(&url).await.map_err(|e| JsError::new(&e))?;
+        let app = App::start(gpu, screen, shape, source, sweeper).await.map_err(|e| JsError::new(&e))?;
         Ok(Tokyo { app })
     }
 

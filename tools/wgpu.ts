@@ -5,17 +5,22 @@
 //   bun tools/wgpu.ts cook                         the city for it: the iPod touch's pack (profiles/ipod60.json)
 //   bun tools/wgpu.ts build                        wasm32 + wasm-bindgen + the page → .pocket-build/wgpu/site
 //   bun tools/wgpu.ts serve [--port 8787]          the site and the pack, with byte ranges
+//   bun tools/wgpu.ts dist [--piece 2]             the directory a static host serves → .pocket-build/wgpu/dist:
+//                                                  the page, the module under its build's name, and the pack
+//                                                  cut into pieces of that many MiB with their manifest
+//   bun tools/wgpu.ts serve --dist                 that directory as such a host serves it: no byte ranges
 //   bun tools/wgpu.ts shot [--out f.png] [--shape ipod] [--size WxH] [--words "view=… hour=…"] [--against device.png]
 //                                                  one frame on this machine's GPU (Metal) → a PNG and the status
 //   bun tools/wgpu.ts counts                       the triangles and draws of an eye the iPod touch reported, here
-//   bun tools/wgpu.ts check [--headed] [--seconds 5]   the tab in Chrome: a frame, frames a second at two sizes,
-//                                                  bytes read before the first frame → .pocket-build/validation/web/
+//   bun tools/wgpu.ts check [--headed] [--seconds 5] [--dist]   the tab in Chrome: a frame, frames a second at
+//                                                  two sizes, bytes read before the first frame, the keys
+//                                                  → .pocket-build/validation/web/
 //
 // Every command takes [--area shiba] and [--pack PATH] (default: .pocket-build/city/<area>/ipod60/city.pack).
 // The packs, the site and the captures stay under the ignored .pocket-build/.
 
 import { $ } from "bun";
-import { cpSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { gzipSync } from "node:zlib";
 import { join, resolve } from "node:path";
 import { POCKET3D_ICON } from "../vendor/pocketjs/tools/pocket3d-icon.ts";
@@ -24,6 +29,10 @@ const ROOT = resolve(import.meta.dir, "..");
 const CRATE = join(ROOT, "wgpu");
 const BUILD = join(ROOT, ".pocket-build/wgpu");
 const SITE = join(BUILD, "site");
+const DIST = join(BUILD, "dist");
+// What the host a build is deployed to allows (Pocket Studio's site deployments): the size of a file, the
+// files and the bytes of a deployment, and the top-level names it keeps for itself.
+const HOST = { file: 32 << 20, files: 4000, bytes: 1 << 30, reserved: ["play", "runtime"] };
 const TITLE = join(ROOT, "vendor/pocketjs/engine/pocket3d/crates/pocket3d-title/web");
 
 const [command, ...rest] = process.argv.slice(2);
@@ -61,6 +70,86 @@ async function build() {
   return sizes;
 }
 
+const APP = ["main.js", "sweep.js", "pocket3d-shell.js", "pocket3d-title.js", "art.js", "pkg/tokyo_wgpu.js", "pkg/tokyo_wgpu_bg.wasm"];
+const sha256 = (bytes: Uint8Array | string) => new Bun.CryptoHasher("sha256").update(bytes).digest("hex");
+
+/** Every file under a directory, as paths from it. */
+function files(directory: string, under = ""): string[] {
+  return readdirSync(join(directory, under), { withFileTypes: true }).flatMap((entry) => (entry.isDirectory() ? files(directory, join(under, entry.name)) : [join(under, entry.name)]));
+}
+
+/**
+ * The directory a static host serves, for a host that limits a file's size and keeps a file for ten minutes
+ * in a browser's cache. Only the page is asked for again at every visit, so everything it names has a name of
+ * its own contents: the module and its scripts under `app/<build>/`, the pack's manifest by the pack's hash,
+ * a piece by its own. A deployment of new code leaves the pack's files as they are.
+ */
+async function dist(pieceBytes: number) {
+  needPack();
+  await build();
+  rmSync(DIST, { recursive: true, force: true });
+  const app = APP.map((file) => [file, readFileSync(join(SITE, file))] as const);
+  const id = sha256(Buffer.concat(app.flatMap(([file, bytes]) => [Buffer.from(file), bytes]))).slice(0, 12);
+  for (const [file, bytes] of app) {
+    mkdirSync(join(DIST, "app", id, file, ".."), { recursive: true });
+    writeFileSync(join(DIST, "app", id, file), bytes);
+  }
+  // The pack in pieces of one size, and the manifest that lists them (pocket_web_wgpu::source::Manifest).
+  const whole = readFileSync(pack);
+  const hash = sha256(whole);
+  mkdirSync(join(DIST, "pack"));
+  const pieces: string[] = [];
+  for (let at = 0; at < whole.length; at += pieceBytes) {
+    const piece = whole.subarray(at, at + pieceBytes);
+    pieces.push(`${sha256(piece).slice(0, 20)}.bin`);
+    writeFileSync(join(DIST, "pack", pieces.at(-1)!), piece);
+  }
+  const manifest = `pack/${hash.slice(0, 16)}.json`;
+  writeFileSync(join(DIST, manifest), JSON.stringify({ pack: "pocket-pack-pieces/1", bytes: whole.length, piece: pieceBytes, sha256: hash, pieces }, null, 1));
+  // The page names its build and its pack.
+  let page = readFileSync(join(SITE, "index.html"), "utf8");
+  for (const [from, to] of [[`<meta name="pocket-pack" content="city.pack">`, `<meta name="pocket-pack" content="${manifest}">`], [`src="main.js"`, `src="app/${id}/main.js"`]] as const) {
+    if (!page.includes(from)) throw new Error(`wgpu/page/index.html has no ${from}`);
+    page = page.replace(from, to);
+  }
+  writeFileSync(join(DIST, "index.html"), page);
+  cpSync(join(SITE, "icon.png"), join(DIST, "icon.png"));
+
+  // What was written is the pack, and is what the host takes.
+  const again = new Bun.CryptoHasher("sha256");
+  for (const name of pieces) again.update(readFileSync(join(DIST, "pack", name)));
+  if (again.digest("hex") !== hash) throw new Error("the pieces do not make up the pack");
+  const all = files(DIST).map((file) => ({ file, bytes: statSync(join(DIST, file)).size }));
+  const total = all.reduce((sum, f) => sum + f.bytes, 0);
+  const largest = all.reduce((a, b) => (b.bytes > a.bytes ? b : a));
+  const part = (prefix: string) => all.filter((f) => f.file.startsWith(prefix)).reduce((sum, f) => ({ files: sum.files + 1, bytes: sum.bytes + f.bytes }), { files: 0, bytes: 0 });
+  const refused = [
+    ...all.filter((f) => f.bytes > HOST.file).map((f) => `${f.file} is ${f.bytes} bytes (a file is at most ${HOST.file})`),
+    ...(all.length > HOST.files ? [`${all.length} files (at most ${HOST.files})`] : []),
+    ...(total > HOST.bytes ? [`${total} bytes (at most ${HOST.bytes})`] : []),
+    ...readdirSync(DIST).filter((name) => HOST.reserved.includes(name)).map((name) => `${name}/ is the host's own`),
+  ];
+  if (refused.length) throw new Error(`the host would refuse the directory: ${refused.join("; ")}`);
+  const report = { directory: DIST, files: all.length, bytes: total, largest, build: id, page: part("index.html"), app: part("app/"), pack: { ...part("pack/"), manifest, pieces: pieces.length, piece: pieceBytes, sha256: hash } };
+  writeFileSync(join(BUILD, "dist.json"), JSON.stringify(report, null, 1));
+  return report;
+}
+
+/** The deployable directory as its host serves it: whole files, the page asked for again at every visit. */
+function serveDist(port: number) {
+  return Bun.serve({
+    port,
+    hostname: "127.0.0.1",
+    fetch(request) {
+      const path = decodeURIComponent(new URL(request.url).pathname);
+      const file = join(DIST, path === "/" ? "index.html" : path);
+      if (!file.startsWith(DIST) || !existsSync(file) || !statSync(file).isFile()) return new Response("not found", { status: 404 });
+      const type = file.split(".").pop()!;
+      return new Response(Bun.file(file), { headers: { "Content-Type": TYPES[type] ?? "application/octet-stream", "Cache-Control": type === "html" ? "no-cache" : "public, max-age=600" } });
+    },
+  });
+}
+
 const TYPES: Record<string, string> = { html: "text/html; charset=utf-8", js: "text/javascript; charset=utf-8", wasm: "application/wasm", json: "application/json", png: "image/png" };
 
 /** The site and the pack. The pack is answered a range at a time, as a tab asks for it. */
@@ -87,11 +176,12 @@ function serve(port: number) {
   });
 }
 
-/** One frame on this machine's GPU. Returns the status the run printed. */
-async function shot(out: string, extra: string[]) {
+/** One frame on this machine's GPU, from the pack's file or from a manifest of its pieces. Returns the status
+ * the run printed. */
+async function shot(out: string, extra: string[], from = pack) {
   await $`cargo build --release --bin tokyo-shot`.cwd(CRATE).quiet();
   mkdirSync(resolve(out, ".."), { recursive: true });
-  const text = await $`${join(CRATE, "target/release/tokyo-shot")} --pack ${pack} --out ${out} ${extra}`.text();
+  const text = await $`${join(CRATE, "target/release/tokyo-shot")} --pack ${from} --out ${out} ${extra}`.text();
   return JSON.parse(text);
 }
 
@@ -106,6 +196,12 @@ if (command === "cook") {
   await $`bun tools/tokyo.ts cook --area ${area} --profile ipod60`.cwd(ROOT);
 } else if (command === "build") {
   console.log(JSON.stringify(await build(), null, 1));
+} else if (command === "dist") {
+  console.log(JSON.stringify(await dist(Math.round(Number(option("--piece", "2")) * (1 << 20))), null, 1));
+} else if (command === "serve" && rest.includes("--dist")) {
+  if (!existsSync(join(DIST, "index.html"))) await dist(2 << 20);
+  const server = serveDist(Number(option("--port", "8787")));
+  console.log(`http://127.0.0.1:${server.port}/   (${DIST})`);
 } else if (command === "serve") {
   needPack();
   if (!existsSync(join(SITE, "pkg/tokyo_wgpu_bg.wasm"))) await build();
@@ -130,15 +226,17 @@ if (command === "cook") {
   if (rows.some((row) => row.ipod !== row.wgpu)) throw new Error("the wgpu frame does not draw what the iPod touch's did");
 } else if (command === "check") {
   needPack();
-  const sizes = await build();
+  // (--dist: the deployable directory, served whole files only, with the pack in pieces)
+  const deployed = rest.includes("--dist") ? await dist(Math.round(Number(option("--piece", "2")) * (1 << 20))) : null;
+  const sizes = deployed ? JSON.parse(readFileSync(join(BUILD, "site.json"), "utf8")).sizes : await build();
   const { chromium } = await import("playwright-core");
-  const server = serve(0);
-  const directory = validation(`check-${stamp()}`);
+  const server = deployed ? serveDist(0) : serve(0);
+  const directory = validation(`check-${deployed ? "dist-" : ""}${stamp()}`);
   const seconds = Number(option("--seconds", "5"));
   const origin = `http://127.0.0.1:${server.port}`;
   // WebGPU needs the real GPU: headless Chrome is given Metal through ANGLE; --headed opens a window instead.
   const browser = await chromium.launch({ channel: "chrome", headless: !rest.includes("--headed"), args: ["--use-angle=metal", "--enable-gpu", "--ignore-gpu-blocklist", "--enable-unsafe-webgpu", "--no-proxy-server"] });
-  const report: Record<string, unknown> = { chrome: browser.version(), pack, sizes };
+  const report: Record<string, unknown> = { chrome: browser.version(), pack, sizes, deployed };
   type Run = { address: string; readyMs: number; firstFrameMs: number; bytesBeforeFirstFrame: number; fps: number; frameMs: number; status: Record<string, unknown>; problems: string[] };
   try {
     /** Opens the page, waits for the city, and measures: frames a second in step with the display, and what a
@@ -188,7 +286,7 @@ if (command === "cook") {
     const words = "hour=13 rate=0 view=230,120,-200,0,150,0";
     const picture = join(directory, "tab.png");
     report.picture = await run(`?shape=ipod&words=${encodeURIComponent(words)}`, picture);
-    await shot(join(directory, "here.png"), ["--shape", "ipod", "--words", words]);
+    await shot(join(directory, "here.png"), ["--shape", "ipod", "--words", words], deployed ? join(DIST, deployed.pack.manifest) : pack);
     report.tabAgainstHere = JSON.parse(await $`${join(CRATE, "target/release/tokyo-shot")} --compare ${picture} ${join(directory, "here.png")}`.text());
     // The tour, for the frames a second: the iPod touch's screen and the PS Vita's.
     report.ipod = await run("?shape=ipod", join(directory, "ipod-tour.png"));
@@ -260,6 +358,6 @@ if (command === "cook") {
     writeFileSync(join(directory, "report.json"), JSON.stringify(report, null, 1));
   }
   const brief = (r: Run) => ({ readyMs: r.readyMs, firstFrameMs: r.firstFrameMs, bytesBeforeFirstFrame: r.bytesBeforeFirstFrame, fps: r.fps, frameMs: r.frameMs, drawn: r.status.drawn, draws: r.status.draws, read: r.status.read, shadows: r.status.shadows, problems: r.problems });
-  console.log(JSON.stringify({ chrome: report.chrome, gpu: report.gpu, wasm: sizes["pkg/tokyo_wgpu_bg.wasm"], tabAgainstHere: report.tabAgainstHere, picture: brief(report.picture as Run), ipod: brief(report.ipod as Run), vita: brief(report.vita as Run), sweepHere: report.sweepHere, page: report.page, withoutWebGPU: report.withoutWebGPU }, null, 1));
+  console.log(JSON.stringify({ deployed: deployed && { files: deployed.files, bytes: deployed.bytes, largest: deployed.largest, pack: deployed.pack }, chrome: report.chrome, gpu: report.gpu, wasm: sizes["pkg/tokyo_wgpu_bg.wasm"], tabAgainstHere: report.tabAgainstHere, picture: brief(report.picture as Run), ipod: brief(report.ipod as Run), vita: brief(report.vita as Run), sweepHere: report.sweepHere, page: report.page, withoutWebGPU: report.withoutWebGPU }, null, 1));
   console.log(directory);
-} else throw new Error("usage: cook | build | serve [--port N] | shot [--out PNG] [--shape NAME] [--words WORDS] [--against PNG] | counts | check [--headed] [--seconds N]");
+} else throw new Error("usage: cook | build | serve [--port N] [--dist] | dist [--piece MiB] | shot [--out PNG] [--shape NAME] [--words WORDS] [--against PNG] | counts | check [--headed] [--seconds N] [--dist]");

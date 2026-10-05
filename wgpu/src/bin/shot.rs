@@ -6,7 +6,8 @@
 //!              [--against other.png]
 //!   tokyo-shot --compare a.png b.png
 //!
-//! The flight runs `--frames` frames of a sixtieth of a second and then on
+//! `--pack` names the pack's file, or the manifest (`.json`) of a pack cut into
+//! pieces. The flight runs `--frames` frames of a sixtieth of a second and then on
 //! until every cell near the eye has been read; the last frame is the picture.
 //! `--words` are the development host's (`tokyo_sim::flight::Flight::control`):
 //! `view=` holds the eye, `near=` and `mid=` hold the distances of the levels
@@ -97,7 +98,8 @@ mod native {
 
         let gpu = task::wait(Gpu::headless())?;
         let screen = Screen::texture(&gpu, shape.width, shape.height, shape.samples);
-        let mut app = task::wait(App::start(gpu, screen, shape, Source::new(&pack), |tables| Box::new(SweepHere::new(tables))))?;
+        let source = task::wait(Source::open(&pack))?;
+        let mut app = task::wait(App::start(gpu, screen, shape, source, |tables| Box::new(SweepHere::new(tables))))?;
         if let Some(words) = option("--words") {
             app.control(&words);
         }

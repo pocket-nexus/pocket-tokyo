@@ -33,20 +33,30 @@ export function fit(canvas, width, height, room = document.documentElement) {
 }
 
 /**
- * The frame loop: calls `frame(now)` at most `hz()` times a second, in step
- * with the display, while the tab is shown. `hz` is asked before each frame,
- * so the rate can change while the loop runs. Returns `{ stop() }`.
+ * The frame loop: calls `frame(now)` about `hz()` times a second while the tab
+ * is shown, each frame on a refresh of the display and shown for a whole
+ * number of them. The display's rate is measured from its refreshes: at 60 a
+ * second a game that asks for 60 gets every refresh and one that asks for 30
+ * every other; at 120 they get every second and every fourth. A display whose
+ * rate is no multiple of the one asked for gives the nearest rate that is
+ * (72 a second for 60 on a display of 144), so a game takes the time between
+ * two frames from `now`, not from `hz()`. `hz` is asked before each frame:
+ * the rate can change while the loop runs. Returns `{ stop() }`.
  */
 export function frames(hz, frame) {
-  let last = -Infinity;
   let request = 0;
+  let before = 0;
+  // Milliseconds from one refresh of the display to the next, and refreshes since the last frame.
+  let refresh = 0;
+  let since = Infinity;
   const tick = (now) => {
     request = requestAnimationFrame(tick);
-    const interval = 1000 / hz();
-    // (a display refresh comes a little early as often as a little late)
-    if (now - last < interval - 2) return;
-    // Frames keep to the display's refreshes: a late one does not move the ones after it.
-    last = now - last > interval * 4 ? now : last + Math.round((now - last) / interval) * interval;
+    const step = now - before;
+    before = now;
+    // (a refresh that came late, or the first after the tab was hidden, says nothing of the display's rate)
+    if (step > 2 && step < 50) refresh = refresh ? refresh + (step - refresh) * 0.1 : step;
+    if (++since < Math.max(1, Math.round(1000 / hz() / (refresh || 1000 / 60)))) return;
+    since = 0;
     frame(now);
   };
   request = requestAnimationFrame(tick);

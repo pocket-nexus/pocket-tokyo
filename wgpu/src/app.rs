@@ -138,6 +138,8 @@ pub struct App {
     pub stats: Stats,
     intervals: [f32; WINDOW],
     last: Option<f64>,
+    /// Ticks of the flight that time has passed for and no frame has taken yet.
+    owed: f32,
     average: f32,
     cells_read: u32,
     sweeps: u32,
@@ -181,6 +183,7 @@ impl App {
             stats: Stats::default(),
             intervals: [0.0; WINDOW],
             last: None,
+            owed: 0.0,
             average: 1000.0 / shape.hz as f32,
             cells_read: 0,
             sweeps: 0,
@@ -287,11 +290,13 @@ impl App {
         let from = task::now();
         let interval = self.last.map(|last| (now - last) as f32);
         self.last = Some(now);
-        // One tick of the flight per display refresh since the last frame: a late frame catches up.
-        let ticks = ((interval.unwrap_or(1000.0 / 60.0).min(100.0) * 0.06 + 0.5) as u32).clamp(1, 3.max(self.shape.pace()));
+        let ticks = self.ticks(interval.unwrap_or(1000.0 / 60.0));
         let mut view = View::default();
         unsafe {
-            tokyo_core::tk_step(pad, ticks);
+            // (a frame that no tick has passed for shows the last one's flight again)
+            if ticks > 0 {
+                tokyo_core::tk_step(pad, ticks);
+            }
             tokyo_core::tk_report(&self.perf);
             tokyo_core::tk_view(&mut view);
         }
@@ -325,6 +330,26 @@ impl App {
         Ok(())
     }
 
+    /// Ticks of the flight (sixtieths of a second) for a frame that comes `interval` milliseconds after the
+    /// last. The handhelds' displays refresh 60 times a second and a frame there is a whole number of ticks;
+    /// so it is here when the time between two frames is within a twentieth of a whole number of them (a
+    /// display of 59.94 a second, or of 120 with every second refresh drawn), and a late frame catches up.
+    /// On any other display the part of a tick left over is owed to the next frame, so the flight keeps
+    /// its speed.
+    fn ticks(&mut self, interval: f32) -> u32 {
+        let most = 3.max(self.shape.pace()) as f32;
+        let passed = interval.min(100.0) * 0.06;
+        let whole = (passed + 0.5).floor();
+        if whole >= 1.0 && (passed - whole).abs() <= 0.05 * whole {
+            self.owed = 0.0;
+            return whole.min(most) as u32;
+        }
+        self.owed += passed;
+        let ticks = self.owed.floor().min(most);
+        self.owed = (self.owed - ticks).min(1.0);
+        ticks as u32
+    }
+
     /// Whether every cell the eye is near is in its slot: nothing is wanted and nothing is on its way.
     pub fn settled(&self) -> bool {
         self.reading.get() == 0 && self.arrived.borrow().is_empty() && slots().iter().all(|s| s.state.load(Ordering::Acquire) != WANTED)
@@ -345,7 +370,7 @@ impl App {
         let s = &self.shape;
         let _ = write!(
             extra,
-            "\"fps\":{:.3},\"shape\":{{\"name\":\"{}\",\"width\":{},\"height\":{},\"samples\":{},\"budget\":{},\"hz\":{}}},\"adapter\":\"{}\",\"slotBytes\":{},\"read\":{{\"requests\":{},\"bytes\":{},\"cells\":{},\"underWay\":{}}},\"shadows\":{{\"sweeps\":{},\"ms\":{:.2}}},\"trouble\":\"{}\"",
+            "\"fps\":{:.3},\"shape\":{{\"name\":\"{}\",\"width\":{},\"height\":{},\"samples\":{},\"budget\":{},\"hz\":{}}},\"adapter\":\"{}\",\"slotBytes\":{},\"read\":{{\"requests\":{},\"bytes\":{},\"piece\":{},\"cells\":{},\"underWay\":{}}},\"shadows\":{{\"sweeps\":{},\"ms\":{:.2}}},\"trouble\":\"{}\"",
             if self.perf.frame > 0.0 { 1000.0 / self.perf.frame } else { 0.0 },
             s.name,
             s.width,
@@ -357,6 +382,8 @@ impl App {
             self.tables.slot_bytes,
             read.requests,
             read.bytes,
+            // (0: the pack is one file, read a range at a time)
+            self.source.piece().unwrap_or(0),
             self.cells_read,
             self.reading.get(),
             self.sweeps,

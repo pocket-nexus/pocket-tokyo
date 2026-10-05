@@ -10,7 +10,9 @@
 //
 //   ?shape=psp|vita|3ds|ipod   a handheld's screen, frames a second and triangle budget
 //   ?size=960x544 &samples=4 &budget=200000 &hz=60   one of them changed
-//   ?pack=URL                  the pack (an iPod touch pack; the server answers byte ranges)
+//   ?pack=URL                  the pack (an iPod touch pack): its file, on a server that answers byte
+//                              ranges, or the manifest (.json) of one cut into pieces. Without it, the
+//                              page's own (<meta name="pocket-pack">)
 //   ?words=hour=19+rate=0      what a development host would send the flight
 //   ?sweep=here                the shadows swept in the frames, not in a worker
 //
@@ -53,7 +55,8 @@ async function start() {
   } catch {
     sweeper = undefined;
   }
-  const tokyo = await Tokyo.start(canvas, new URL(query.get("pack") ?? "city.pack", location.href).href, shape.name, sweeper);
+  const pack = query.get("pack") ?? document.querySelector('meta[name="pocket-pack"]').content;
+  const tokyo = await Tokyo.start(canvas, new URL(pack, location.href).href, shape.name, sweeper);
   shape = JSON.parse(tokyo.reshape(shape.name, shape.width, shape.height, number("samples"), number("budget"), number("hz")));
   if (query.get("words")) tokyo.control(query.get("words"));
   const place = () => fit(canvas, shape.width, shape.height, room);
