@@ -4,6 +4,7 @@
 //!   tokyo-shot --pack city.pack --out frame.png [--shape ipod] [--size 480x320] [--samples 4]
 //!              [--budget N] [--frames 240] [--status status.json] [--words "view=… hour=… near=… mid=…"]
 //!              [--against other.png]
+//!   tokyo-shot --compare a.png b.png
 //!
 //! The flight runs `--frames` frames of a sixtieth of a second and then on
 //! until every cell near the eye has been read; the last frame is the picture.
@@ -14,7 +15,8 @@
 //! `--against` names a picture of the same size (a device's capture of the
 //! same view): the status then says how far the two are apart, as the mean
 //! difference of a colour in 255ths and the share of pixels where a colour
-//! differs by more than 16.
+//! differs by more than 16. `--compare` says the same of two pictures and
+//! draws nothing.
 
 #[cfg(not(target_arch = "wasm32"))]
 fn main() {
@@ -57,7 +59,30 @@ mod native {
         })
     }
 
+    /// How far two pictures of one size are apart: the mean difference of a colour in 255ths, and the share
+    /// of pixels where a colour differs by more than 16.
+    fn apart(a: &[u8], b: &[u8]) -> (f64, f64) {
+        let (mut sum, mut far) = (0u64, 0u32);
+        for (a, b) in a.as_chunks::<4>().0.iter().zip(b.as_chunks::<4>().0) {
+            let d = [0, 1, 2].map(|c| a[c].abs_diff(b[c]));
+            sum += d.iter().map(|&d| d as u64).sum::<u64>();
+            far += d.iter().any(|&d| d > 16) as u32;
+        }
+        let count = (a.len() / 4) as f64;
+        (sum as f64 / (count * 3.0), far as f64 / count)
+    }
+
     pub fn run() -> Result<(), String> {
+        if let Some(first) = option("--compare") {
+            let second = std::env::args().skip_while(|a| a != "--compare").nth(2).ok_or("--compare A.png B.png")?;
+            let (a, b) = (picture(&first)?, picture(&second)?);
+            if a.len() != b.len() {
+                return Err("the two pictures are not of one size".into());
+            }
+            let (mean, over) = apart(&a, &b);
+            println!("{{\"mean\":{mean:.3},\"over16\":{over:.4}}}");
+            return Ok(());
+        }
         let pack = option("--pack").ok_or("--pack PATH")?;
         let out = option("--out").ok_or("--out PNG")?;
         let mut shape = Shape::named(&option("--shape").unwrap_or("ipod".into())).ok_or("--shape psp | vita | 3ds | ipod")?;
@@ -101,15 +126,9 @@ mod native {
             if other.len() != pixels.len() {
                 return Err(format!("{path} is not {} by {} pixels", shape.width, shape.height));
             }
-            let (mut sum, mut far) = (0u64, 0u32);
-            for (a, b) in pixels.as_chunks::<4>().0.iter().zip(other.as_chunks::<4>().0) {
-                let d = [0, 1, 2].map(|c| a[c].abs_diff(b[c]));
-                sum += d.iter().map(|&d| d as u64).sum::<u64>();
-                far += d.iter().any(|&d| d > 16) as u32;
-            }
-            let count = (pixels.len() / 4) as f64;
+            let (mean, over) = apart(&pixels, &other);
             status.pop();
-            status.push_str(&format!(",\"against\":{{\"picture\":\"{path}\",\"mean\":{:.3},\"over16\":{:.4}}}}}", sum as f64 / (count * 3.0), far as f64 / count));
+            status.push_str(&format!(",\"against\":{{\"picture\":\"{path}\",\"mean\":{mean:.3},\"over16\":{over:.4}}}}}"));
         }
         if let Some(path) = option("--status") {
             std::fs::write(&path, &status).map_err(|e| format!("{path}: {e}"))?;

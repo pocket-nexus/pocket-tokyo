@@ -8,7 +8,8 @@
 //   if (!hasWebGPU()) { await title; say("…"); return; }
 //   const game = await loadTheGame(canvas);
 //   await title;
-//   frames(() => 60, (now) => game.frame(now, …));
+//   const pad = keys();
+//   frames(() => 60, (now) => { game.frame(now, pad.held("KeyW"), …); pad.next(); });
 //
 // The title card is PocketJS's (engine/pocket3d/crates/pocket3d-title/web): a
 // page plays it first and does not skip, shorten, recolour or redraw it.
@@ -54,22 +55,26 @@ export function frames(hz, frame) {
 
 /**
  * The keys held on `target`, by `KeyboardEvent.code`. `held(code)` is 1 or 0;
- * `axis(less, more)` is -1, 0 or 1. Every key is let go when the page loses
- * the keyboard.
+ * `axis(less, more)` is -1, 0 or 1. A frame reads them and then calls
+ * `next()`: a key pressed and let go between two frames counts as held for
+ * the one frame that follows. Every key is let go when the page loses the
+ * keyboard.
  */
 export function keys(target = window, { own = [] } = {}) {
   const down = new Set();
+  const struck = new Set();
   const mine = new Set(own);
   target.addEventListener("keydown", (event) => {
     if (event.metaKey || event.ctrlKey || event.altKey) return;
     down.add(event.code);
+    struck.add(event.code);
     // (the page does not scroll under a key the game reads)
     if (mine.has(event.code)) event.preventDefault();
   });
   target.addEventListener("keyup", (event) => down.delete(event.code));
   window.addEventListener("blur", () => down.clear());
-  const held = (...codes) => (codes.some((code) => down.has(code)) ? 1 : 0);
-  return { held, axis: (less, more) => held(...[more].flat()) - held(...[less].flat()), any: () => down.size > 0 };
+  const held = (...codes) => (codes.some((code) => down.has(code) || struck.has(code)) ? 1 : 0);
+  return { held, axis: (less, more) => held(more) - held(less), next: () => struck.clear() };
 }
 
 /**

@@ -12,6 +12,7 @@
 //   ?size=960x544 &samples=4 &budget=200000 &hz=60   one of them changed
 //   ?pack=URL                  the pack (an iPod touch pack; the server answers byte ranges)
 //   ?words=hour=19+rate=0      what a development host would send the flight
+//   ?sweep=here                the shadows swept in the frames, not in a worker
 //
 // `window.pocketTokyo` is the running city, for a console and for tools/wgpu.ts.
 import { playTitle } from "./pocket3d-title.js";
@@ -45,7 +46,14 @@ async function start() {
   let shape = { ...named, width: width || named.width, height: height || named.height };
   canvas.width = shape.width;
   canvas.height = shape.height;
-  const tokyo = await Tokyo.start(canvas, new URL(query.get("pack") ?? "city.pack", location.href).href, shape.name);
+  // The shadows are swept in a worker; a browser that starts none sweeps them in the frames.
+  let sweeper;
+  try {
+    sweeper = query.get("sweep") === "here" ? undefined : new Worker(new URL("sweep.js", import.meta.url), { type: "module" });
+  } catch {
+    sweeper = undefined;
+  }
+  const tokyo = await Tokyo.start(canvas, new URL(query.get("pack") ?? "city.pack", location.href).href, shape.name, sweeper);
   shape = JSON.parse(tokyo.reshape(shape.name, shape.width, shape.height, number("samples"), number("budget"), number("hz")));
   if (query.get("words")) tokyo.control(query.get("words"));
   const place = () => fit(canvas, shape.width, shape.height, room);
@@ -53,7 +61,8 @@ async function start() {
 
   const pad = keys(window, { own: OWN });
   const drag = drags(canvas, () => 480);
-  const report = { tokyo, shape: () => shape, firstFrame: 0, frames: 0, failure: "" };
+  // (`ready`: milliseconds from the page's start until the city could be drawn; the card may still be playing)
+  const report = { tokyo, shape: () => shape, ready: performance.now() - started, firstFrame: 0, frames: 0, failure: "" };
   window.pocketTokyo = report;
   await title;
   canvas.hidden = false;
@@ -63,8 +72,10 @@ async function start() {
     if (dx || dy) tokyo.look(dx, dy);
     const buttons = pad.held("ShiftLeft", "ShiftRight") * BTN.FAST | pad.held("KeyE", "Space") * BTN.UP | pad.held("KeyQ") * BTN.DOWN;
     const held = pad.held("KeyT") * KEY.TOUR | pad.held("BracketRight") * KEY.LATER | pad.held("BracketLeft") * KEY.EARLIER | pad.held("Enter") * KEY.MENU;
+    const sticks = [pad.axis("KeyA", "KeyD"), pad.axis("KeyS", "KeyW"), pad.axis("ArrowLeft", "ArrowRight"), 0.7 * pad.axis("ArrowDown", "ArrowUp")];
+    pad.next();
     try {
-      tokyo.frame(now, buttons, held, pad.axis("KeyA", "KeyD"), pad.axis("KeyS", "KeyW"), pad.axis("ArrowLeft", "ArrowRight"), 0.7 * pad.axis("ArrowDown", "ArrowUp"));
+      tokyo.frame(now, buttons, held, ...sticks);
     } catch (error) {
       // A frame the canvas had no texture for is skipped; anything else stops the city and says why.
       report.failure = String(error?.message ?? error);
@@ -77,6 +88,20 @@ async function start() {
     report.frames++;
     report.firstFrame ||= performance.now() - started;
   });
+  // The frame as the canvas holds it, one pixel of the city to a pixel: a PNG as a data URL.
+  report.capture = () => {
+    tokyo.burst(performance.now(), 1);
+    return canvas.toDataURL("image/png");
+  };
+  // Milliseconds a frame costs the processor and the GPU together, over `count` frames drawn without
+  // waiting for the display.
+  report.burst = async (count = 300) => {
+    const device = canvas.getContext("webgpu").getConfiguration().device;
+    const from = performance.now();
+    tokyo.burst(from, count);
+    await device.queue.onSubmittedWorkDone();
+    return (performance.now() - from) / count;
+  };
   // Another screen while the city flies: `pocketTokyo.reshape("psp")`, or with numbers of one's own.
   report.reshape = (name, { width = 0, height = 0, samples = 0, budget = 0, hz = 0 } = {}) => {
     const next = all.find((s) => s.name === name);

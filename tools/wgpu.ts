@@ -47,13 +47,13 @@ async function build() {
   await $`cargo build --release --lib --target wasm32-unknown-unknown`.cwd(CRATE);
   mkdirSync(join(SITE, "pkg"), { recursive: true });
   await $`wasm-bindgen --target web --no-typescript --out-dir ${join(SITE, "pkg")} ${join(CRATE, "target/wasm32-unknown-unknown/release/tokyo_wgpu.wasm")}`;
-  for (const file of ["index.html", "main.js"]) cpSync(join(CRATE, "page", file), join(SITE, file));
+  for (const file of ["index.html", "main.js", "sweep.js"]) cpSync(join(CRATE, "page", file), join(SITE, file));
   cpSync(join(CRATE, "kernel/web/pocket3d-shell.js"), join(SITE, "pocket3d-shell.js"));
   // The Pocket3D title card and the icon of the tab, as PocketJS ships them.
   for (const file of ["pocket3d-title.js", "art.js"]) cpSync(join(TITLE, file), join(SITE, file));
   cpSync(POCKET3D_ICON.ios2x, join(SITE, "icon.png"));
   const sizes: Record<string, { bytes: number; gzip: number }> = {};
-  for (const file of ["pkg/tokyo_wgpu_bg.wasm", "pkg/tokyo_wgpu.js", "main.js", "pocket3d-shell.js", "pocket3d-title.js", "art.js", "index.html"]) {
+  for (const file of ["pkg/tokyo_wgpu_bg.wasm", "pkg/tokyo_wgpu.js", "main.js", "sweep.js", "pocket3d-shell.js", "pocket3d-title.js", "art.js", "index.html"]) {
     const bytes = readFileSync(join(SITE, file));
     sizes[file] = { bytes: bytes.length, gzip: gzipSync(bytes, { level: 9 }).length };
   }
@@ -139,43 +139,127 @@ if (command === "cook") {
   // WebGPU needs the real GPU: headless Chrome is given Metal through ANGLE; --headed opens a window instead.
   const browser = await chromium.launch({ channel: "chrome", headless: !rest.includes("--headed"), args: ["--use-angle=metal", "--enable-gpu", "--ignore-gpu-blocklist", "--enable-unsafe-webgpu", "--no-proxy-server"] });
   const report: Record<string, unknown> = { chrome: browser.version(), pack, sizes };
+  type Run = { address: string; readyMs: number; firstFrameMs: number; bytesBeforeFirstFrame: number; fps: number; frameMs: number; status: Record<string, unknown>; problems: string[] };
   try {
-    const measure = async (name: string, address: string) => {
+    /** Opens the page, waits for the city, and measures: frames a second in step with the display, and what a
+     * frame costs when nothing waits for the display. `picture`: the canvas's own pixels go to this file. */
+    const run = async (address: string, picture?: string): Promise<Run> => {
       const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
       const problems: string[] = [];
       page.on("console", (message) => message.type() === "error" && problems.push(message.text()));
       page.on("pageerror", (error) => problems.push(String(error)));
+      // What the tab was sent before its first frame: the page, the module, the head of the pack.
       let before = 0;
       let counting = true;
-      page.on("response", async (response) => {
-        // What the tab was sent before its first frame: the page, the module, the head of the pack.
-        const length = Number(response.headers()["content-length"] ?? 0) || (await response.body().catch(() => Buffer.alloc(0))).length;
-        if (counting) before += length;
+      page.on("response", (response) => {
+        if (counting) before += Number(response.headers()["content-length"] ?? 0);
       });
       await page.goto(`${origin}/${address}`);
       await page.waitForFunction("window.pocketTokyo && (window.pocketTokyo.frames > 0 || window.pocketTokyo.failure)", undefined, { timeout: 60_000 });
       counting = false;
-      const first = (await page.evaluate("({ failure: pocketTokyo.failure, firstFrame: pocketTokyo.firstFrame })")) as { failure: string; firstFrame: number };
-      if (first.failure) throw new Error(`${name}: ${first.failure}`);
+      const first = (await page.evaluate("({ failure: pocketTokyo.failure, ready: pocketTokyo.ready, firstFrame: pocketTokyo.firstFrame })")) as { failure: string; ready: number; firstFrame: number };
+      if (first.failure) throw new Error(`${address}: ${first.failure}`);
       // The city as the tab shows it once every cell near the eye has arrived.
       await page.waitForFunction("pocketTokyo.tokyo.settled()", undefined, { timeout: 60_000 });
       const from = (await page.evaluate("({ frames: pocketTokyo.frames, at: performance.now() })")) as { frames: number; at: number };
       await page.waitForTimeout(seconds * 1000);
-      const to = (await page.evaluate("({ frames: pocketTokyo.frames, at: performance.now(), status: JSON.parse(pocketTokyo.tokyo.status()), adapter: navigator.gpu.getPreferredCanvasFormat() })")) as { frames: number; at: number; status: Record<string, unknown>; adapter: string };
-      await page.locator("canvas").screenshot({ path: join(directory, `${name}.png`) });
+      const to = (await page.evaluate("({ frames: pocketTokyo.frames, at: performance.now() })")) as { frames: number; at: number };
+      const status = JSON.parse((await page.evaluate("pocketTokyo.tokyo.status()")) as string);
+      if (picture) {
+        const url = (await page.evaluate("pocketTokyo.capture()")) as string;
+        writeFileSync(picture, Buffer.from(url.slice(url.indexOf(",") + 1), "base64"));
+      }
+      const frameMs = (await page.evaluate("pocketTokyo.burst(300)")) as number;
       await page.close();
-      return { address, firstFrameMs: Math.round(first.firstFrame), bytesBeforeFirstFrame: before, fps: +(((to.frames - from.frames) * 1000) / (to.at - from.at)).toFixed(2), canvasFormat: to.adapter, status: to.status, problems };
+      return { address, readyMs: Math.round(first.ready), firstFrameMs: Math.round(first.firstFrame), bytesBeforeFirstFrame: before, fps: +(((to.frames - from.frames) * 1000) / (to.at - from.at)).toFixed(2), frameMs: +frameMs.toFixed(3), status, problems };
     };
-    // A held eye and a stopped clock for the picture; the tour for the frames a second.
-    const held = "words=" + encodeURIComponent("hour=13 rate=0 view=230,120,-200,0,150,0");
-    report.picture = await measure("ipod-view", `?shape=ipod&${held}`);
-    report.ipod = await measure("ipod-tour", "?shape=ipod");
-    report.vita = await measure("vita-tour", "?shape=vita");
+    // The GPU the tab is given.
+    const probe = await browser.newPage();
+    await probe.goto(`${origin}/index.html`);
+    report.gpu = await probe.evaluate(`(async () => {
+      const adapter = await navigator.gpu?.requestAdapter({ powerPreference: "high-performance" });
+      if (!adapter) return null;
+      const { vendor, architecture, device, description } = adapter.info ?? {};
+      return { vendor, architecture, device, description, fallback: adapter.info?.isFallbackAdapter ?? adapter.isFallbackAdapter ?? false, format: navigator.gpu.getPreferredCanvasFormat() };
+    })()`);
+    await probe.close();
+
+    // A held eye and a stopped clock: the tab's frame beside this machine's own of the same view.
+    const words = "hour=13 rate=0 view=230,120,-200,0,150,0";
+    const picture = join(directory, "tab.png");
+    report.picture = await run(`?shape=ipod&words=${encodeURIComponent(words)}`, picture);
+    await shot(join(directory, "here.png"), ["--shape", "ipod", "--words", words]);
+    report.tabAgainstHere = JSON.parse(await $`${join(CRATE, "target/release/tokyo-shot")} --compare ${picture} ${join(directory, "here.png")}`.text());
+    // The tour, for the frames a second: the iPod touch's screen and the PS Vita's.
+    report.ipod = await run("?shape=ipod", join(directory, "ipod-tour.png"));
+    report.vita = await run("?shape=vita", join(directory, "vita-tour.png"));
+    // The shadows swept in the frames, for what a sweep costs a frame there.
+    report.sweepHere = (await run("?shape=ipod&sweep=here")).status.shadows;
+
+    // The page as a person meets it: the title card first, then the keys, a drag and another screen.
+    const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
+    const problems: string[] = [];
+    page.on("console", (message) => message.type() === "error" && problems.push(message.text()));
+    page.on("pageerror", (error) => problems.push(String(error)));
+    const expect = (what: string, ok: boolean) => {
+      if (!ok) throw new Error(`the page: ${what}`);
+    };
+    const status = async () => JSON.parse((await page.evaluate("pocketTokyo.tokyo.status()")) as string);
+    // (the card's cover and whether the city's canvas is shown)
+    const shown = async () => (await page.evaluate("[document.querySelectorAll('[aria-label=Pocket3D]').length, document.getElementById('city').hidden]")) as [number, boolean];
+    await page.goto(`${origin}/?shape=vita`);
+    await page.waitForTimeout(1200);
+    const during = await shown();
+    await page.screenshot({ path: join(directory, "title.png") });
+    expect(`the Pocket3D title card covers the page before the city is shown (${during})`, during[0] === 1 && during[1] === true);
+    await page.waitForFunction("window.pocketTokyo?.frames > 60", undefined, { timeout: 60_000 });
+    const afterwards = await shown();
+    expect(`the card has left and the city is shown (${afterwards})`, afterwards[0] === 0 && afterwards[1] === false);
+    const touring = await status();
+    await page.keyboard.down("KeyW");
+    await page.waitForTimeout(1500);
+    await page.keyboard.up("KeyW");
+    const flown = await status();
+    expect("W takes the eye off the tour and flies it", touring.tour.on === true && flown.tour.on === false);
+    const box = (await page.locator("canvas#city").boundingBox())!;
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(box.x + box.width / 2 + 200, box.y + box.height / 2, { steps: 10 });
+    await page.mouse.up();
+    await page.waitForTimeout(500);
+    const turned = await status();
+    const heading = (look: number[]) => Math.atan2(look[0]!, -look[2]!);
+    // (the picture follows the pointer: dragged right, the eye turns left)
+    const swung = Math.atan2(Math.sin(heading(turned.look) - heading(flown.look)), Math.cos(heading(turned.look) - heading(flown.look)));
+    expect(`a drag to the right turns the eye to the left (it turned ${swung.toFixed(3)} rad)`, swung < -0.2);
+    await page.keyboard.press("KeyT");
+    await page.waitForTimeout(300);
+    expect("T hands the eye back to the tour", (await status()).tour.on === true);
+    const shaped = (await page.evaluate(`pocketTokyo.reshape("psp")`)) as { width: number; height: number; hz: number };
+    await page.waitForTimeout(1500);
+    const after = await status();
+    const size = (await page.evaluate("[document.getElementById('city').width, document.getElementById('city').height]")) as number[];
+    expect("another screen while the city flies", shaped.width === 480 && shaped.height === 272 && size.join() === "480,272" && after.shape.name === "psp" && after.governor.budget === 42000 && Math.abs(after.fps - 30) < 2);
+    await page.screenshot({ path: join(directory, "page-psp.png") });
+    expect(`no error on the page (${problems.join("; ")})`, problems.length === 0);
+    await page.close();
+    report.page = { tourThenKeys: [touring.tour.on, flown.tour.on], dragTurnedRad: +swung.toFixed(3), reshaped: after.shape, fpsAfterReshape: after.fps };
+
+    // A browser without WebGPU is told so in one sentence, after the card.
+    const without = await browser.newPage();
+    await without.addInitScript("Object.defineProperty(Navigator.prototype, 'gpu', { get: undefined, configurable: true }); delete Navigator.prototype.gpu;");
+    await without.goto(`${origin}/`);
+    await without.waitForFunction("document.getElementById('say').textContent !== ''", undefined, { timeout: 20_000 });
+    report.withoutWebGPU = await without.locator("#say").textContent();
+    const cover = (await without.evaluate("document.querySelectorAll('[aria-label=Pocket3D]').length")) as number;
+    expect(`a browser without WebGPU is told so, once the card has left ("${report.withoutWebGPU}", ${cover})`, report.withoutWebGPU === "This browser has no WebGPU, which Pocket Tokyo draws with." && cover === 0);
+    await without.close();
   } finally {
     await browser.close();
     server.stop(true);
     writeFileSync(join(directory, "report.json"), JSON.stringify(report, null, 1));
   }
-  console.log(JSON.stringify(report, null, 1));
+  const brief = (r: Run) => ({ readyMs: r.readyMs, firstFrameMs: r.firstFrameMs, bytesBeforeFirstFrame: r.bytesBeforeFirstFrame, fps: r.fps, frameMs: r.frameMs, drawn: r.status.drawn, draws: r.status.draws, read: r.status.read, shadows: r.status.shadows, problems: r.problems });
+  console.log(JSON.stringify({ chrome: report.chrome, gpu: report.gpu, wasm: sizes["pkg/tokyo_wgpu_bg.wasm"], tabAgainstHere: report.tabAgainstHere, picture: brief(report.picture as Run), ipod: brief(report.ipod as Run), vita: brief(report.vita as Run), sweepHere: report.sweepHere, page: report.page, withoutWebGPU: report.withoutWebGPU }, null, 1));
   console.log(directory);
 } else throw new Error("usage: cook | build | serve [--port N] | shot [--out PNG] [--shape NAME] [--words WORDS] [--against PNG] | counts | check [--headed] [--seconds N]");

@@ -265,11 +265,6 @@ impl App {
 
     /// The shadows follow the sun: a sweep when it has moved a degree, or the shade has changed.
     fn shadows(&mut self, view: &View, busy: bool) {
-        if let Some((texels, ms)) = self.sweeper.finished() {
-            self.renderer.shadows(&self.gpu, texels);
-            self.sweeps += 1;
-            self.sweep_ms = ms;
-        }
         let (sun, shade) = (view.sun, view.shade);
         let lit = sun != [0.0; 3];
         let (was, shaded) = self.swept_for;
@@ -278,6 +273,12 @@ impl App {
         // A frame that hands a cell to the GPU does not sweep as well.
         if lit && moved && !busy && self.sweeper.start(sun, shade) {
             self.swept_for = (sun, shade);
+        }
+        // (a sweep of this frame's own is there at once; one from beside the frames when it has arrived)
+        if let Some((texels, ms)) = self.sweeper.finished() {
+            self.renderer.shadows(&self.gpu, texels);
+            self.sweeps += 1;
+            self.sweep_ms = ms;
         }
     }
 
