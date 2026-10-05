@@ -17,3 +17,29 @@ pub const PACK_CARD: &str = "ux0:data/pocket-tokyo/city.pack";
 pub const PACK_CARD_ID: &str = "ux0:data/pocket-tokyo/city.json";
 /// The pack of a packaged build.
 pub const PACK_APP: &str = "app0:city.pack";
+/// What the interface asked to have stored, in the data folder.
+pub const INTERFACE_FILE: &str = "interface.json";
+
+/// Paths a shipped file of the interface (`tokyo.js`, `tokyo.pak`) is looked
+/// for at, in order: the USB share (development builds), the package, the
+/// data folder.
+pub fn candidates(name: &str) -> Vec<String> {
+    let mut v = Vec::new();
+    if cfg!(feature = "usb-debug") {
+        v.push(format!("{HOST}/{name}"));
+    }
+    v.push(format!("app0:{name}"));
+    v.push(format!("{DATA}/{name}"));
+    v
+}
+
+/// Writes a file in the data folder through a temporary file, so a power-off
+/// mid-write leaves the previous version.
+pub fn write_text(name: &str, text: &str) {
+    let _ = std::fs::create_dir_all(DATA);
+    let (tmp, path) = (format!("{DATA}/{name}.tmp"), format!("{DATA}/{name}"));
+    if std::fs::write(&tmp, text).is_ok() {
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::rename(&tmp, &path);
+    }
+}

@@ -72,10 +72,12 @@ name = "pocket-tokyo-vita"
 version = "0.1.0"
 dependencies = [
  "libm",
+ "libquickjs-sys",
  "pocket-vita-gxm",
  "pocket3d-title",
  "pocketjs-vita",
  "serde_json",
+ "tokyo-interface",
  "tokyo-pack",
  "tokyo-sim",
  "vita2d-sys",
@@ -221,6 +223,15 @@ dependencies = [
  "arrayvec",
  "serde",
  "slotmap",
+]
+
+[[package]]
+name = "tokyo-interface"
+version = "0.1.0"
+dependencies = [
+ "libm",
+ "libquickjs-sys",
+ "tokyo-sim",
 ]
 
 [[package]]
