@@ -340,10 +340,10 @@ static int status_text(char *line, size_t cap) {
   struct mallinfo heap = mallinfo();
   int n = snprintf(extra, sizeof extra,
                    "\"build\":\"" TOKYO_BUILD_ID "\",\"phase\":\"%s\",\"error\":\"%s\",\"packBytes\":%lu,\"linearFree\":%lu,\"vramFree\":%lu,\"heap\":{\"used\":%lu,\"size\":%lu},\"new3ds\":%s,\"read\":{\"cells\":%lu,\"ms\":%lu},\"shadows\":{\"sweeps\":%lu,\"ms\":%lu},"
-                   "\"interface\":{\"up\":%s,\"open\":%s,\"error\":\"%s\",\"turns\":%lu,\"turnMs\":%.3f,\"worstTurnMs\":%.3f,\"cpuMs\":%.3f,\"commands\":%lu,\"vertices\":%lu,\"dropped\":%lu,\"heapBytes\":%lu,\"linearBytes\":%lu}",
+                   "\"interface\":{\"up\":%s,\"open\":%s,\"error\":\"%s\",\"turns\":%lu,\"lowerDraws\":%lu,\"turnMs\":%.3f,\"scriptMs\":%.3f,\"worstTurnMs\":%.3f,\"cpuMs\":%.3f,\"commands\":%lu,\"vertices\":%lu,\"dropped\":%lu,\"heapBytes\":%lu,\"linearBytes\":%lu}",
                    stage, app_error, (unsigned long)pack_bytes, (unsigned long)linearSpaceFree(), (unsigned long)vramSpaceFree(), (unsigned long)heap.uordblks, (unsigned long)envGetHeapSize(), new3ds ? "true" : "false",
                    (unsigned long)cells_read, (unsigned long)read_ms_total, (unsigned long)shadows_swept, (unsigned long)sweep_ms_last, guest_running() ? "true" : "false", tk_interface_open() ? "true" : "false", guest,
-                   (unsigned long)guest_turns(), guest_turn_ms(), guest_worst_ms(), ui_ms, (unsigned long)gfx_frame_commands(), (unsigned long)gfx_frame_vertices(), (unsigned long)gfx_dropped_vertices(), (unsigned long)guest_heap,
+                   (unsigned long)guest_turns(), (unsigned long)guest_lower_draws(), guest_turn_ms(), guest_script_ms(), guest_worst_ms(), ui_ms, (unsigned long)gfx_frame_commands(), (unsigned long)gfx_frame_vertices(), (unsigned long)gfx_dropped_vertices(), (unsigned long)guest_heap,
                    (unsigned long)guest_linear);
   if (!strcmp(stage, "running")) {
     tk_status(body, sizeof body, &perf, extra, n);
@@ -710,11 +710,11 @@ int main(void) {
     u64 build_start = svcGetSystemTick();
     tk_refill();
     /* The interface's vertices when it took a turn; the city; the interface over it; the lower screen on the
-     * frames its content changed (it keeps what it showed on the others). */
-    bool turned = guest_prepare();
+     * frames its list changed (it keeps what it showed on the others). */
+    guest_prepare();
     render_frame(top, &view, lists, counts);
     guest_draw_top();
-    if (bottom && (turned || lower_stale || (long)frame_no == shot_at)) {
+    if (bottom && (guest_lower_changed() || lower_stale || (long)frame_no == shot_at)) {
       guest_draw_bottom(bottom);
       lower_stale = false;
     }

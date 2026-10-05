@@ -25,14 +25,19 @@ const char *guest_error(void);
 void guest_turn(float dt);
 /* A turn now, whatever is owed: for the frames shown while the pack loads. */
 void guest_turn_now(void);
-/* Milliseconds a turn takes, smoothed; the longest one after the first second; how many there were. */
+/* Milliseconds a turn takes, smoothed, and of them the guest's script; the longest turn after the first
+ * second; how many turns there were, and how many times the lower screen was drawn. */
 float guest_turn_ms(void);
+float guest_script_ms(void);
 float guest_worst_ms(void);
 uint32_t guest_turns(void);
+uint32_t guest_lower_draws(void);
 
 /* After C3D_FrameBegin. Builds both screens' vertices when a turn ran since
  * the last call, and says whether it did; otherwise the last ones stand. */
 bool guest_prepare(void);
+/* The lower screen's list is not the one it was last drawn from. */
+bool guest_lower_changed(void);
 /* Over the upper target as bound. */
 void guest_draw_top(void);
 /* Clears the lower target and draws the touch screen. */

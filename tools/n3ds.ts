@@ -15,7 +15,7 @@
 //   bun tools/n3ds.ts capture [--out f.png] [--surface top|auxiliary]
 //   bun tools/n3ds.ts bench [--seconds 60] [--install]   # the tour's frame timings → .pocket-build/validation/3ds/
 //   bun tools/n3ds.ts trace [--seconds 60]      # the tour's eye a few times a second: how fast it moves and climbs
-//   bun tools/n3ds.ts emu [--frames 90] [--ctl "view=..."] [--out f.png]
+//   bun tools/n3ds.ts emu [--frames 90] [--ctl "view=..."] [--out f.png] [--prefs JSON]
 //                                               # the same .3dsx in Azahar (software PICA): both screens of a
 //                                               # frame (the lower one under the upper) and the status
 //
@@ -318,7 +318,9 @@ switch (cmd) {
             cpuMs: mean((s) => s.interface?.cpuMs ?? 0),
             turnMs: mean((s) => s.interface?.turnMs ?? 0),
             worstTurnMs: last.interface.worstTurnMs,
+            scriptMs: mean((s) => s.interface?.scriptMs ?? 0),
             turnsPerSecond: (last.interface.turns - (begin.interface?.turns ?? 0)) / last.t,
+            lowerDrawsPerSecond: (last.interface.lowerDraws - (begin.interface?.lowerDraws ?? 0)) / last.t,
             heapBytes: last.interface.heapBytes,
             linearBytes: last.interface.linearBytes,
           },
@@ -385,6 +387,12 @@ switch (cmd) {
     mkdirSync(card, { recursive: true });
     const frames = Number(opt("--frames", "90"));
     writeFileSync(`${card}/boot.txt`, `title=0 ${opt("--ctl", "")} shot=${frames} exit=${frames + 3}\n`);
+    // What the interface kept in an earlier run, when the run is to start from it.
+    const kept = `${user}/sdmc/3ds/pocket-tokyo/interface.json`;
+    if (opt("--prefs", "")) {
+      mkdirSync(resolve(kept, ".."), { recursive: true });
+      writeFileSync(kept, opt("--prefs", ""));
+    }
     const rom = `${fixture}/${NAME}`;
     cpSync(ARTIFACT, rom);
     const launch = Bun.spawnSync(["open", "-n", "-g", "-a", app, "--env", `HOME=${fixture}`, "--stdout", `${fixture}/console.log`, "--stderr", `${fixture}/console.log`, "--args", rom]);
@@ -413,6 +421,7 @@ switch (cmd) {
         await Bun.sleep(500);
       }
       if (existsSync(`${card}/status.json`)) console.log(readFileSync(`${card}/status.json`, "utf8"));
+      if (existsSync(kept)) console.log(`kept: ${readFileSync(kept, "utf8")}`);
       const bytes = readFileSync(`${card}/shot.bgr`);
       if (bytes.length !== 400 * 240 * 3) throw new Error("the frame is not 400 by 240");
       // The lower screen stands under the upper one, as on the console. A run without an interface has none.

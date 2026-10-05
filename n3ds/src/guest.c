@@ -19,8 +19,11 @@ static const char rate[] = "globalThis.__simHz=30;";
 
 static bool running;
 static char failure[192];
-static float owed = TURN, turn_ms, worst_ms;
-static uint32_t turns;
+static float owed = TURN, turn_ms, script_ms, worst_ms;
+static uint32_t turns, lower_draws;
+/* What the lower screen's list was when it was last drawn. */
+static uint32_t lower_drawn;
+static bool lower_changed;
 /* A turn ran and its DrawLists have not been built into vertices yet. */
 static bool fresh;
 static size_t words[2];
@@ -120,8 +123,10 @@ void guest_shutdown(void) {
 bool guest_running(void) { return running; }
 const char *guest_error(void) { return failure; }
 float guest_turn_ms(void) { return turn_ms; }
+float guest_script_ms(void) { return script_ms; }
 float guest_worst_ms(void) { return worst_ms; }
 uint32_t guest_turns(void) { return turns; }
+uint32_t guest_lower_draws(void) { return lower_draws; }
 
 static void ask(uint8_t kind, uint32_t value) {
   if (ask_count < sizeof asks / sizeof *asks) {
@@ -175,6 +180,8 @@ static void turn(void) {
     svcwire_shutdown();
     return;
   }
+  float script = (float)(svcGetSystemTick() - start) * 1000.0f / SYSCLOCK_ARM11;
+  script_ms += (script - script_ms) * 0.1f;
   /* Two core ticks to a turn: the core counts sixtieths. */
   ui_tick();
   ui_tick();
@@ -222,8 +229,18 @@ bool guest_prepare(void) {
   gfx_prepare_surface(0, ui_draw_list_ptr(), words[0], 400, 240);
   gfx_prepare_surface(1, ui_draw_auxiliary_list_ptr(), words[1], 320, 240);
   gfx_finish_frame();
+  /* The lower screen keeps its picture until its list says something else: most turns move a number on the
+   * upper screen and nothing below. (FNV-1a over the list's words.) */
+  uint32_t hash = 0x811c9dc5u;
+  const uint32_t *list = ui_draw_auxiliary_list_ptr();
+  for (size_t i = 0; i < words[1]; i++)
+    hash = (hash ^ list[i]) * 0x01000193u;
+  lower_changed = lower_changed || hash != lower_drawn || !lower_draws;
+  lower_drawn = hash;
   return true;
 }
+
+bool guest_lower_changed(void) { return running && lower_changed; }
 
 static void draw(uint32_t surface) {
   C3D_SetAttrInfo(&attributes);
@@ -245,8 +262,10 @@ void guest_draw_top(void) {
 void guest_draw_bottom(C3D_RenderTarget *bottom) {
   C3D_RenderTargetClear(bottom, C3D_CLEAR_COLOR, 0x000000ff, 0);
   C3D_FrameDrawOn(bottom);
+  lower_changed = false;
   if (!running)
     return;
+  lower_draws++;
   C3D_SetViewport(0, 0, 240, 320);
   draw(1);
 }
