@@ -1,15 +1,18 @@
 // Drives one device's bundle through a flight against the mock renderer and
 // checks what it asked for.
-//   bun ui/test/flow.ts <psp|vita|3ds|ipod>     (after `bun tools/ui.ts <device>`)
+//   bun ui/test/flow.ts <psp|vita|3ds|ipod|android>     (after `bun tools/ui.ts <device>`)
 import assert from "node:assert/strict";
 import { BTN } from "../../vendor/pocketjs/contracts/spec/spec.ts";
 import { FLY, type Command } from "../app/protocol.ts";
-import { boot, type Device } from "./harness.ts";
+import { anchored, boot, type Device } from "./harness.ts";
 
 const device = (process.argv[2] ?? "psp") as Device;
 const rig = await boot(device);
 const mock = rig.mock;
-const touch = device === "ipod", dual = device === "3ds";
+const touch = device === "ipod" || device === "android", dual = device === "3ds";
+/** A touch panel's points are written as they lie on the iPod touch, with the edges their control hangs from. */
+const at = anchored(rig.view);
+const tap = (...point: Parameters<typeof at>) => rig.tap(...at(...point));
 /** The commands since the last call, without the touch panel's streams. */
 let read = 0;
 const asked = (): Command[] => {
@@ -32,11 +35,11 @@ assert.equal(mock.state.options[1].value, 1);
 
 // The hours, from the title: the clock is turned to dusk.
 if (touch) {
-  rig.tap(80, 280);
+  tap(80, 280, "l", "b");
   rig.step(6);
-  rig.tap(240, 174);
+  tap(240, 174, "c", "c");
   rig.step(4);
-  rig.tap(100, 34);
+  tap(100, 34, "c", "c");
 } else {
   choose(2);
   choose(4);
@@ -47,7 +50,7 @@ assert.deepEqual(asked(), [{ type: "hour", minutes: 1090 }]);
 assert.equal(mock.state.t[0], 1090);
 
 // The title's first choice starts the tour.
-if (touch) rig.tap(130, 146);
+if (touch) tap(130, 146);
 else choose(0);
 rig.step(4);
 assert.deepEqual(asked(), [{ type: "start", tour: true }]);
@@ -73,27 +76,28 @@ assert.equal(mock.idle, true);
 
 if (touch) {
   // A thumb on the stick and one on the climb key: the stick forward, the key held.
-  for (let i = 0; i < 8; i++) rig.step(1, { touch: [{ id: 1, x: 86, y: 234 - i * 6 }, { id: 2, x: 424, y: 170 }] });
+  const [stick, up] = [at(86, 234, "l", "b"), at(424, 170, "r", "b")];
+  for (let i = 0; i < 8; i++) rig.step(1, { touch: [{ id: 1, x: stick[0], y: stick[1] - i * 6 }, { id: 2, x: up[0], y: up[1] }] });
   assert.equal(mock.drive.b, FLY.up);
   assert.ok(mock.drive.my > 60 && Math.abs(mock.drive.mx) < 10, `stick ${mock.drive.mx},${mock.drive.my}`);
   rig.step(2);
   assert.deepEqual(mock.drive, { mx: 0, my: 0, b: 0 });
   // A finger on the city turns the view by what it travels.
-  for (let i = 0; i < 6; i++) rig.step(1, { touch: [{ id: 3, x: 200 + i * 10, y: 150 }] });
+  for (let i = 0; i < 6; i++) rig.step(1, { touch: [{ id: 3, x: at(200, 150, "c", "c")[0] + i * 10, y: at(200, 150, "c", "c")[1] }] });
   rig.step(2);
   assert.ok(mock.looked.dx >= 40, `looked ${mock.looked.dx}`);
   assert.deepEqual(asked(), []);
   // The tour's key hands the eye over.
-  rig.tap(332, 34);
+  tap(332, 34, "r");
   rig.step(2);
   assert.deepEqual(asked(), [{ type: "tour", on: true }]);
   // The clock opens the day as a bar: a finger at its middle turns the clock to noon.
-  rig.tap(426, 34);
+  tap(426, 34, "r");
   rig.step(4);
-  rig.step(3, { touch: [{ id: 4, x: 240, y: 86 }] });
+  rig.step(3, { touch: [{ id: 4, x: at(240, 86, "c")[0], y: 86 }] });
   rig.step(2);
   assert.deepEqual(asked(), [{ type: "hour", minutes: 720 }]);
-  rig.tap(426, 34);
+  tap(426, 34, "r");
   rig.step(2);
 }
 if (dual) {
@@ -108,15 +112,15 @@ if (dual) {
 const touring = touch || dual;
 
 // The menu: a setting, and the way back to the flight.
-if (touch) rig.tap(32, 32);
+if (touch) tap(32, 32);
 else rig.press(BTN.START);
 rig.step(8);
 assert.deepEqual(asked(), [{ type: "menu", on: true }]);
 assert.equal(mock.state.mode, "menu");
 if (touch) {
-  rig.tap(340, 166);
+  tap(340, 166, "c", "c");
   rig.step(6);
-  rig.tap(340, 122);
+  tap(340, 122, "c", "c");
 } else {
   choose(3);
   choose(1);
@@ -126,10 +130,10 @@ const kept = { options: { invert: 1, stats: 1 } };
 assert.deepEqual(asked(), [{ type: "option", key: "stats", value: 1 }, { type: "prefs", value: JSON.stringify(kept) }]);
 assert.ok(mock.state.stats.length > 0);
 if (touch) {
-  rig.tap(256, 34);
+  tap(256, 34, "c", "c");
   rig.step(6);
   // The second row hands the eye to the tour, or takes it, and leaves the menu.
-  rig.tap(340, 78);
+  tap(340, 78, "c", "c");
 } else {
   rig.press(BTN.CROSS);
   rig.step(6);
@@ -141,9 +145,9 @@ assert.equal(mock.state.mode, "flight");
 
 // START closes the menu it opened, and the title is one row away.
 if (touch) {
-  rig.tap(32, 32);
+  tap(32, 32);
   rig.step(8);
-  rig.tap(340, 254);
+  tap(340, 254, "c", "c");
 } else {
   rig.press(BTN.START);
   rig.step(8);
