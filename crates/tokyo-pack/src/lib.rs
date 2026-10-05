@@ -34,13 +34,14 @@
 //! | `GTEX` | BC1 levels of every block's and every region's picture from above |
 //! | `HMAP` | `u16` per cell of `City::grid`: the top of whatever stands there, in `City::height_step` metres above `City::y0` |
 //! | `TOUR` | `f32 × 6` per place of the tour: where the eye is, and the point it looks at |
-//! | `HPIC` | handheld packs: `HandPicture` table, one per block, then the facades, then the cards |
-//! | `HTEX` | handheld packs: the pictures. PSP: a day palette and a night palette (256 × 4 bytes, red first), then levels of 8-bit indices, largest first, each swizzled. 3DS: the day picture's levels, then the night picture's, `r5 g6 b5`, tiled |
+//! | `HPIC` | handheld packs: `HandPicture` table, one per block, then the facades |
+//! | `LAND` | handheld packs: `Landmark` table |
+//! | `HTEX` | handheld packs: the pictures. PSP: a day palette and a night palette (256 × 4 bytes, red first), then levels of 8-bit indices, largest first, each swizzled; a picture of the ground keeps to the first 128 colours. 3DS: the ground by day in ETC1; the facades by day, then what their windows emit, `r5 g6 b5`; all tiled |
 //! | `NCEL` | handheld packs: `NearCell` table, one per cell |
 //! | `NEAR` | handheld packs: per cell its top, wall and solid vertices, its indices and its picture (as in `HTEX`) |
 //! | `LANE` | the traffic's lanes: `tokyo_sim::traffic::Lane` records |
 //! | `LPTS` | `f32 × 3` per point of a lane, on its side of the road |
-//! | `LAMP` | `u16` per cell of the same grid: lamp light on the ground at night, half strength, `r << 11 | g << 5 | b` |
+//! | `LAMP` | lamp light on the ground at night, half strength, `r << 11 | g << 5 | b`. Vita: `u16` per cell of the grid the heights were drawn on. 3DS: a texture of 1 024 texels a side over the grid of `HMAP`, tiled |
 
 #![cfg_attr(not(feature = "std"), no_std)]
 
@@ -80,6 +81,7 @@ pub const LANE: u32 = tag(b"LANE");
 pub const LPTS: u32 = tag(b"LPTS");
 pub const NCEL: u32 = tag(b"NCEL");
 pub const NEAR: u32 = tag(b"NEAR");
+pub const LAND: u32 = tag(b"LAND");
 
 /// Levels of detail: near by cell, mid by block, far by region.
 pub const LODS: usize = 3;
@@ -141,9 +143,9 @@ pub mod kind {
     pub const WALL: u32 = 1;
     /// Painted geometry: `SolidVertex`.
     pub const SOLID: u32 = 2;
-    /// A picture with holes on a few faces, in place of a lattice (handheld packs): wall vertices, textured by
-    /// the card picture, drawn last and blended.
-    pub const CARD: u32 = 3;
+    /// Painted geometry that is seen from both sides: the members of a landmark (handheld packs).
+    /// `SolidVertex` records, drawn without culling.
+    pub const OPEN: u32 = 3;
 }
 
 /// A range of the `BTCH` table.
@@ -237,6 +239,21 @@ pub struct NearCell {
     /// The picture: the side of its largest level, and how many levels.
     pub width: u16,
     pub levels: u16,
+}
+
+/// A landmark of a handheld pack: a model of its own at each level of detail, chosen by its distance alone.
+/// Its vertices are in the frame of `block`, as that block's solids are.
+#[derive(Clone, Copy, Debug, Default)]
+#[repr(C)]
+pub struct Landmark {
+    pub min: [f32; 3],
+    pub max: [f32; 3],
+    /// Its batches near, in the middle distance and far.
+    pub lods: [Draws; LODS],
+    /// The distances at which the near model gives way to the mid one, and that to the far one.
+    pub reach: [f32; 2],
+    pub block: u32,
+    pub pad: u32,
 }
 
 /// A day and night pair of pictures of a handheld pack, in `HTEX`.

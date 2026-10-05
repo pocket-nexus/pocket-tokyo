@@ -4,30 +4,31 @@
   "cells": 4,
   "ground": {
     "block": 256,
-    "cell": 256,
+    "cell": 128,
     "cellLevels": 3
   },
   "terrain": {
     "error": [
-      0.8,
-      5.0
+      1.5,
+      6.0
     ],
     "stride": [
-      4,
+      8,
       32
     ],
     "skirt": [
-      5.0,
+      6.0,
       20.0
     ]
   },
   "near": {
-    "cell": 1,
-    "cap": 4.0,
-    "minArea": 25,
-    "eps": 1.25,
-    "minHeight": 2.0,
-    "smooth": 2
+    "cell": 2,
+    "cap": 5.0,
+    "minArea": 40,
+    "eps": 2.0,
+    "minHeight": 3.0,
+    "smooth": 2,
+    "room": 56000
   },
   "prisms": [
     {
@@ -49,12 +50,12 @@
   ],
   "solids": {
     "error": [
-      1.2,
-      4.0
+      2.5,
+      5.0
     ],
     "minSize": [
-      7.0,
-      30.0
+      18.0,
+      1000000000.0
     ]
   },
   "facade": {
@@ -66,7 +67,18 @@
   "heights": {
     "step": 2.0,
     "unit": 0.0078125,
-    "store": 4
+    "store": 2
   },
-  "region": 1
+  "region": 1,
+  "landmarks": {
+    "reach": [
+      450,
+      1100
+    ],
+    "thick": [
+      0.0,
+      1.6,
+      3.2
+    ]
+  }
 }

@@ -345,7 +345,7 @@ impl CityGpu {
         for l in &mut lists {
             l.clear();
         }
-        let tables = view::Tables { city: &self.city, regions: &self.regions, blocks: &self.blocks, cells: &self.cells, batches: &self.batches, spans: &self.spans, cards: &[] };
+        let tables = view::Tables { city: &self.city, regions: &self.regions, blocks: &self.blocks, cells: &self.cells, batches: &self.batches, spans: &self.spans, landmarks: &[] };
         let counts = view::select(&tables, &planes, eye, &view::Reach { near: show.near, mid: show.mid, sectors: show.sectors, split: false }, &|_| true, &mut lists);
         stats.places = counts.places;
         stats.turned = counts.turned;

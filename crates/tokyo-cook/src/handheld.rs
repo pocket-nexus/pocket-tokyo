@@ -38,7 +38,9 @@ pub fn resize(img: &Image, w: usize, h: usize) -> Image {
 /// The facade pictures for a handheld: the day picture with its walls at full brightness (a device multiplies
 /// by the building's colour, and has no mask to tell wall from window), and the night picture: the same dimmed,
 /// plus what the windows emit.
-pub fn facades(day: &Image, night: &Image, w: usize, h: usize, wall_grey: f32) -> (Image, Image) {
+/// `lights_only`: the night picture is what the windows emit and nothing else, for a machine that adds it to
+/// the wall as its own light leaves it.
+pub fn facades(day: &Image, night: &Image, w: usize, h: usize, wall_grey: f32, lights_only: bool) -> (Image, Image) {
     let (d, n) = (resize(day, w, h), resize(night, w, h));
     let mut day_out = d.rgba.clone();
     let mut night_out = vec![255u8; w * h * 4];
@@ -48,12 +50,17 @@ pub fn facades(day: &Image, night: &Image, w: usize, h: usize, wall_grey: f32) -
             let v = d.rgba[i * 4 + c] as f32;
             let lifted = (v + (v / wall_grey - v) * mask).min(255.0);
             day_out[i * 4 + c] = lifted as u8;
-            night_out[i * 4 + c] = (lifted * [0.16, 0.18, 0.26][c] + n.rgba[i * 4 + c] as f32 * 2.0).min(255.0) as u8;
+            let wall = if lights_only { 0.0 } else { lifted * NIGHT_WALL[c] };
+            night_out[i * 4 + c] = (wall + n.rgba[i * 4 + c] as f32 * 2.0).min(255.0) as u8;
         }
         day_out[i * 4 + 3] = 255;
     }
     (Image { w, h, rgba: day_out }, Image { w, h, rgba: night_out })
 }
+
+/// What the night leaves of a wall's own colour, and of the ground's.
+pub const NIGHT_WALL: [f32; 3] = [0.16, 0.18, 0.26];
+pub const NIGHT_GROUND: [f32; 3] = [0.13, 0.15, 0.22];
 
 /// A ground picture by night: its own colours under the night's ambient light and the lamps'. `lamp(u, v)`:
 /// lamp light at a place of the picture (0..1 across and down).
@@ -64,7 +71,7 @@ pub fn night_ground(day: &Image, lamp: impl Fn(f32, f32) -> [f32; 3]) -> Image {
             let l = lamp((x as f32 + 0.5) / day.w as f32, (y as f32 + 0.5) / day.h as f32);
             let o = (y * day.w + x) * 4;
             for c in 0..3 {
-                rgba[o + c] = (day.rgba[o + c] as f32 * ([0.13, 0.15, 0.22][c] + l[c] * 0.8)).min(255.0) as u8;
+                rgba[o + c] = (day.rgba[o + c] as f32 * (NIGHT_GROUND[c] + l[c] * 0.8)).min(255.0) as u8;
             }
         }
     }
@@ -87,7 +94,7 @@ fn psp_swizzle(src: &[u8], row_bytes: usize, rows: usize) -> Vec<u8> {
 
 /// 16-bit texels into the PICA's layout: 8 × 8 tiles in row order, Morton order inside a tile, and the image's
 /// last row first.
-fn pica_tile(texels: &[u16], w: usize, h: usize) -> Vec<u8> {
+pub fn pica_tile(texels: &[u16], w: usize, h: usize) -> Vec<u8> {
     let mut out = vec![0u8; w * h * 2];
     for y in 0..h {
         for x in 0..w {
@@ -219,64 +226,34 @@ pub fn levels_of(w: usize, h: usize) -> usize {
     n
 }
 
-/// A pair with holes as the PSP takes it: 64 pairs of colours at four strengths of covering, so index `k` is
-/// colour `k % 64` covered `k / 64` thirds.
-fn psp_holes(day: Image, night: Image, levels: usize) -> Vec<u8> {
-    // (the colours of what is covered at all)
-    let covered = |img: &Image| Image { w: img.w, h: img.h, rgba: img.rgba.chunks_exact(4).zip(day.rgba.chunks_exact(4)).filter(|(_, d)| d[3] > 24).flat_map(|(p, _)| p.iter().copied()).collect() };
-    let colors = palette(&covered(&day), &covered(&night), 64);
+/// The ground as the 3DS takes it: the day picture's levels in ETC1. Its night is the device's own work: the
+/// night's light and the lamps' on the same picture.
+fn pica_ground(day: Image, levels: usize) -> Vec<u8> {
     let mut out = Vec::new();
-    for half in 0..2 {
-        for k in 0..256 {
-            let c = colors.get(k % 64).copied().unwrap_or([0; 6]);
-            out.extend_from_slice(&[c[half * 3], c[half * 3 + 1], c[half * 3 + 2], (k / 64 * 85) as u8]);
-        }
-    }
-    let (mut d, mut n) = (day, night);
+    let mut img = day;
     for level in 0..levels {
-        let index: Vec<u8> = d
-            .rgba
-            .chunks_exact(4)
-            .zip(n.rgba.chunks_exact(4))
-            .map(|(a, b)| {
-                let p = [a[0], a[1], a[2], b[0], b[1], b[2]].map(|v| v as i32);
-                let color = (0..colors.len()).min_by_key(|&k| (0..6).map(|c| (colors[k][c] as i32 - p[c]).pow(2)).sum::<i32>()).unwrap_or(0);
-                (color + ((a[3] as usize + 42) / 85) * 64) as u8
-            })
-            .collect();
-        out.extend_from_slice(&psp_swizzle(&index, d.w, d.h));
+        out.extend_from_slice(&crate::etc1::pica(&img));
         if level + 1 < levels {
-            d = d.half();
-            n = n.half();
+            img = img.half();
         }
     }
     out
 }
 
-/// A pair with holes as the 3DS takes it: the day picture's levels, then the night picture's, four bits a
-/// channel with the covering last, tiled.
-fn pica_holes(day: Image, night: Image, levels: usize) -> Vec<u8> {
-    let mut out = Vec::new();
-    for mut img in [day, night] {
-        for level in 0..levels {
-            let texels: Vec<u16> = img.rgba.chunks_exact(4).map(|p| ((p[0] as u16 >> 4) << 12) | ((p[1] as u16 >> 4) << 8) | ((p[2] as u16 >> 4) << 4) | (p[3] as u16 >> 4)).collect();
-            out.extend_from_slice(&pica_tile(&texels, img.w, img.h));
-            if level + 1 < levels {
-                img = img.half();
-            }
-        }
-    }
-    out
+/// What a picture is, which decides how a machine stores it.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Kind {
+    /// From above. PSP: 128 colours, the other half of the palette left to the device. 3DS: ETC1, by day only.
+    Ground,
+    Facade,
 }
 
-/// A day and night pair as the machine takes it, and how many levels it has: at most `most`. `colors`: of a
-/// PSP's palette, how many the picture uses; 0 for a picture with holes.
-pub fn pair(target: Target, day: Image, night: Image, most: usize, colors: usize) -> (Vec<u8>, usize) {
+/// A day and night pair as the machine takes it, and how many levels it has: at most `most`.
+pub fn pair(target: Target, kind: Kind, day: Image, night: Image, most: usize) -> (Vec<u8>, usize) {
     let levels = levels_of(day.w, day.h).min(most);
-    let bytes = match (target, colors) {
-        (Target::Psp, 0) => psp_holes(day, night, levels),
-        (Target::Psp, _) => psp_pair(day, night, levels, colors),
-        (_, 0) => pica_holes(day, night, levels),
+    let bytes = match (target, kind) {
+        (Target::Psp, _) => psp_pair(day, night, levels, if kind == Kind::Ground { 128 } else { 256 }),
+        (_, Kind::Ground) => pica_ground(day, levels),
         _ => pica_pair(day, night, levels),
     };
     (bytes, levels)

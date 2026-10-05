@@ -26,7 +26,7 @@ impl Target {
         match self {
             Target::Vita => [12, 20, 16],
             Target::Psp => [8, 12, 8],
-            Target::Pica => [12, 20, 16],
+            Target::Pica => [8, 16, 12],
         }
     }
 }

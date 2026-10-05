@@ -9,12 +9,13 @@
 //! shadows.
 
 mod buildings;
-mod card;
 mod city;
+mod etc1;
 mod geom;
 mod handheld;
 mod heights;
 mod ir;
+mod landmark;
 mod prisms;
 mod simplify;
 mod target;
@@ -31,7 +32,7 @@ use std::hash::Hash;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 use target::{psp565, store, Raw, Target};
-use tokyo_pack::{self as pack, flag, kind, Batch, Block, Cell, City, Draws, GroundLevel, NearCell, Region, SolidVertex, TopVertex, WallVertex, LODS, SECTORS};
+use tokyo_pack::{self as pack, flag, kind, Batch, Block, Cell, City, Draws, GroundLevel, Landmark, NearCell, Region, SolidVertex, TopVertex, WallVertex, LODS, SECTORS};
 
 /// Heights are stored over this range (metres above Tokyo Peil).
 const Y0: f32 = -16.0;
@@ -212,15 +213,17 @@ impl Frame<'_> {
     fn top(&self, t: &TopTri) -> ([Raw; 3], [P3; 3]) {
         let v = [0, 1, 2].map(|k| {
             let pos = [q_in(t.p[k][0], self.x0, self.side), qy(t.p[k][1]), q_in(t.p[k][2], self.z0, self.side)];
-            let (ao, n) = (self.sky.open(t.p[k], t.n[k]), n8(t.n[k]));
+            let ao = self.sky.open(t.p[k], t.n[k]);
             match self.target {
-                Target::Vita => Raw::of(&TopVertex { pos, ao, pad: 0, normal: n, pad2: 0 }),
+                Target::Vita => Raw::of(&TopVertex { pos, ao, pad: 0, normal: n8(t.n[k]), pad2: 0 }),
                 // The GE: colour, position. Its texture matrix makes the coordinates in the picture from x and z,
                 // and every top is lit as one group.
                 Target::Psp => Raw::from(&[&psp565([ao; 3]), &s16(pos[0]), &s16(pos[1]), &s16(pos[2])]),
-                Target::Pica => Raw::from(&[&s16(pos[0]), &s16(pos[1]), &s16(pos[2]), &[0, 0], &[n[0] as u8, n[1] as u8, n[2] as u8, ao]]),
+                // The PICA200: position, then what the point sees of the sky. Its program lights every top alike.
+                Target::Pica => Raw::from(&[&s16(pos[0]), &s16(pos[1]), &s16(pos[2]), &[ao, 0]]),
             }
         });
+        let _ = n8;
         (v, t.p)
     }
     fn wall(&self, w: &WallTri) -> ([Raw; 3], [P3; 3]) {
@@ -236,15 +239,11 @@ impl Frame<'_> {
                     let tint = [0, 1, 2].map(|c| (w.color[c] as u16 * ao as u16 / 255) as u8);
                     Raw::from(&[&(uv[0] as u16).to_le_bytes(), &v16.to_le_bytes(), &psp565(tint), &s16(pos[0]), &s16(pos[1]), &s16(pos[2])])
                 }
-                Target::Pica => Raw::from(&[&s16(pos[0]), &s16(pos[1]), &s16(pos[2]), &[0, 0], &[n[0] as u8, n[1] as u8, n[2] as u8, ao], &[w.color[0], w.color[1], w.color[2], w.gain], &uv[0].to_le_bytes(), &uv[1].to_le_bytes()]),
+                // (the sector the wall faces stands in for its normal: the program holds a light per sector)
+                Target::Pica => Raw::from(&[&s16(pos[0]), &s16(pos[1]), &s16(pos[2]), &[ao, w.sector], &[w.color[0], w.color[1], w.color[2], w.gain], &uv[0].to_le_bytes(), &uv[1].to_le_bytes()]),
             }
         });
         (v, w.p)
-    }
-    /// A card's face: a wall's vertex, lit as the open sky lights it.
-    fn card(&self, w: &WallTri) -> ([Raw; 3], [P3; 3]) {
-        let open = heights::Heights { x0: 0.0, z0: 0.0, step: 1.0, w: 1, h: 1, data: vec![f32::NEG_INFINITY] };
-        Frame { sky: &open, ..*self }.wall(w)
     }
     fn solid(&self, s: &SolidTri) -> ([Raw; 3], [P3; 3]) {
         let v = [0, 1, 2].map(|k| {
@@ -256,7 +255,7 @@ impl Frame<'_> {
                     let c = [0, 1, 2].map(|c| (s.color[c] as u16 * ao as u16 / 255) as u8);
                     Raw::from(&[&psp565(c), &s16(pos[0]), &s16(pos[1]), &s16(pos[2])])
                 }
-                Target::Pica => Raw::from(&[&s16(pos[0]), &s16(pos[1]), &s16(pos[2]), &[0, 0], &[n[0] as u8, n[1] as u8, n[2] as u8, ao], &s.color]),
+                Target::Pica => Raw::from(&[&s16(pos[0]), &s16(pos[1]), &s16(pos[2]), &[ao, city::solid_sector(&s.p)], &s.color]),
             }
         });
         (v, s.p)
@@ -311,7 +310,7 @@ fn run() -> Result<(), String> {
     let per_region = BLOCK_TILES * region_blocks as i32;
     // A machine without fragment programs lights a group of faces with one colour: its solids are ordered by
     // sector as walls are. A handheld reads each cell's near level by itself.
-    let faced = target == Target::Psp;
+    let faced = target != Target::Vita;
     let streamed = target != Target::Vita;
     let floor_to = |v: i32| v.div_euclid(per_region) * per_region;
     let (tx0, tz0) = (floor_to(manifest.tiles.iter().map(|t| t.x).min().ok_or("no tiles")?), floor_to(manifest.tiles.iter().map(|t| t.z).min().unwrap()));
@@ -423,7 +422,7 @@ fn run() -> Result<(), String> {
     let mut present = vec![false; nx * nz];
     // Painted geometry by tile: the lattice tower as it is, and what may be simplified.
     let mut lattice: Vec<Vec<SolidTri>> = vec![Vec::new(); nx * nz];
-    let mut whole_lattice: Vec<SolidTri> = Vec::new();
+
     let mut painted: Vec<Vec<SolidTri>> = vec![Vec::new(); nx * nz];
     let mut crowns: Vec<Vec<SolidTri>> = vec![Vec::new(); nx * nz];
     let put_solid = |to: &mut Vec<Vec<SolidTri>>, s: &SolidTri| {
@@ -454,7 +453,7 @@ fn run() -> Result<(), String> {
         for s in &r.built.solids {
             put_solid(&mut lattice, s);
         }
-        whole_lattice.extend_from_slice(&r.built.solids);
+
         for s in &r.models {
             put_solid(&mut painted, s);
         }
@@ -565,7 +564,7 @@ fn run() -> Result<(), String> {
             // Painted geometry: all of it near, less of it in the middle; far away it is in the region's picture.
             out.near.solids = simplify::solids(&painted[i], f(&profile["solids"], "error", 0, 0.15), f(&profile["solids"], "minSize", 0, 0.0));
             out.mid.solids = simplify::solids(&painted[i], f(&profile["solids"], "error", 1, 1.0), f(&profile["solids"], "minSize", 1, 0.0));
-            // (a handheld draws a lattice as a card)
+            // (a handheld draws a lattice tower as a landmark, from its members)
             if !streamed {
                 for level in [&mut out.near, &mut out.mid, &mut out.far] {
                     level.solids.extend_from_slice(&lattice[i]);
@@ -807,19 +806,38 @@ fn run() -> Result<(), String> {
         *record = Block { y_min: ys.0 - 20.0, y_max: ys.1, mid, ..Default::default() };
     }
     drop(tiles);
-    // ---- a handheld's lattice towers: a card each, in the frame of the block it stands in
-    let cards = if streamed { card::cards(&whole_lattice) } else { Vec::new() };
-    for c in &cards {
-        let (bx, bz) = ((((c.at[0] - tx0 as f32 * tile) / block) as usize).min(bnx - 1), (((c.at[1] - tz0 as f32 * tile) / block) as usize).min(bnz - 1));
-        let frame = Frame { x0: tx0 as f32 * tile + bx as f32 * block, z0: tz0 as f32 * tile + bz as f32 * block, side: block, sky: &heights, target };
-        for chunk in chunks(&c.faces, |w| frame.card(w)) {
-            let at = store(&mut out.vwal, &chunk.vertices);
-            out.batch(kind::CARD, at, chunk.vertices.len(), &chunk.bounds, &chunk.tris, None);
-            // (a card's `spans` is the block whose frame its vertices are in)
-            out.batches.last_mut().unwrap().spans = (bz * bnx + bx) as u32;
+    // ---- a handheld's landmarks: a model at each level of detail, made from the members the export recorded,
+    // in the frame of the block the landmark stands in
+    let marks = if streamed { landmark::read(&input.join("landmarks.cir"))? } else { Vec::new() };
+    let mark_rule = |lod: usize| landmark::Rule { rank: 2 - lod as u8, thick: f(&profile["landmarks"], "thick", lod, [0.0, 1.6, 3.2][lod]) };
+    let mut landmarks: Vec<Landmark> = Vec::new();
+    let mut mark_meta: Vec<Value> = Vec::new();
+    let open_sky = heights::Heights { x0: 0.0, z0: 0.0, step: 1.0, w: 1, h: 1, data: vec![f32::NEG_INFINITY] };
+    for l in &marks {
+        let (bx, bz) = ((((l.at[0] - tx0 as f32 * tile) / block) as usize).min(bnx - 1), (((l.at[1] - tz0 as f32 * tile) / block) as usize).min(bnz - 1));
+        let frame = Frame { x0: tx0 as f32 * tile + bx as f32 * block, z0: tz0 as f32 * tile + bz as f32 * block, side: block, sky: &open_sky, target };
+        let mut record = Landmark { min: [f32::INFINITY; 3], max: [f32::NEG_INFINITY; 3], reach: [f(&profile["landmarks"], "reach", 0, 450.0), f(&profile["landmarks"], "reach", 1, 1100.0)], block: (bz * bnx + bx) as u32, ..Default::default() };
+        let mut counts = [0usize; LODS];
+        for lod in 0..LODS {
+            let mut tris = landmark::model(l, mark_rule(lod), lod == 0);
+            tris.sort_by_key(|s| city::solid_sector(&s.p));
+            let first = out.batches.len();
+            for c in chunks(&tris, |s| frame.solid(s)) {
+                let at = store(&mut out.vsol, &c.vertices);
+                let group: Vec<usize> = c.source.iter().map(|&k| city::solid_sector(&tris[k].p) as usize).collect();
+                out.batch(kind::OPEN, at, c.vertices.len(), &c.bounds, &c.tris, faced.then_some((&group[..], SECTORS + 1)));
+                counts[lod] += c.tris.len();
+                for k in 0..3 {
+                    record.min[k] = record.min[k].min(c.bounds.min[k]);
+                    record.max[k] = record.max[k].max(c.bounds.max[k]);
+                }
+            }
+            record.lods[lod] = Draws { first: first as u32, count: (out.batches.len() - first) as u32 };
         }
+        mark_meta.push(json!({"model": l.name, "members": l.beams.len(), "triangles": counts}));
+        landmarks.push(record);
     }
-    println!("cook: {} cards, {} cells with coarser painted geometry to fit", cards.len(), coarsened);
+    println!("cook: {} landmarks {}, {} cells with coarser painted geometry to fit", landmarks.len(), serde_json::to_string(&mark_meta).unwrap(), coarsened);
     let sizes = target.sizes();
     println!("cook: {} draws, {} + {} + {} vertices, {} indices in {:.1} s", out.batches.len(), out.vtop.len() / sizes[0], out.vwal.len() / sizes[1], out.vsol.len() / sizes[2], out.idx.len(), t0.elapsed().as_secs_f32());
 
@@ -914,7 +932,7 @@ fn run() -> Result<(), String> {
             let night = handheld::night_ground(&day, |u, v| lamp_at(x0 + u * side, z0 + v * side));
             let w = day.w;
             // (the ground's pictures leave half the palette to the device, for its shadows)
-            let (bytes, levels) = handheld::pair(target, day, night, most, 128);
+            let (bytes, levels) = handheld::pair(target, handheld::Kind::Ground, day, night, most);
             (bytes, w, levels)
         };
         let block_pictures: Vec<(Vec<u8>, usize, usize)> = (0..bnx * bnz)
@@ -930,17 +948,10 @@ fn run() -> Result<(), String> {
             htex.resize((htex.len() + 15) & !15, 0);
         }
         let size = [profile["facade"]["size"][0].as_u64().unwrap_or(512) as usize, profile["facade"]["size"][1].as_u64().unwrap_or(128) as usize];
-        let (day, night) = handheld::facades(&tex::load(&input.join("facade.day.png"))?, &tex::load(&input.join("facade.night.png"))?, size[0], size[1], 0.7354);
-        let (bytes, levels) = handheld::pair(target, day, night, usize::MAX, 256);
+        let (day, night) = handheld::facades(&tex::load(&input.join("facade.day.png"))?, &tex::load(&input.join("facade.night.png"))?, size[0], size[1], 0.7354, target == Target::Pica);
+        let (bytes, levels) = handheld::pair(target, handheld::Kind::Facade, day, night, usize::MAX);
         hpic.push(pack::HandPicture { offset: htex.len() as u32, size: bytes.len() as u32, width: size[0] as u16, height: size[1] as u16, levels: levels as u32 });
         htex.extend_from_slice(&bytes);
-        for c in cards {
-            htex.resize((htex.len() + 15) & !15, 0);
-            let (w, h) = (c.day.w, c.day.h);
-            let (bytes, levels) = handheld::pair(target, c.day, c.night, usize::MAX, 0);
-            hpic.push(pack::HandPicture { offset: htex.len() as u32, size: bytes.len() as u32, width: w as u16, height: h as u16, levels: levels as u32 });
-            htex.extend_from_slice(&bytes);
-        }
 
         // ---- the cells: a tile's picture cut by cell
         let cell_size = profile["ground"]["cell"].as_u64().unwrap_or(256) as usize;
@@ -1104,6 +1115,7 @@ fn run() -> Result<(), String> {
         "buildings": all.len(),
         "triangles": (0..LODS).map(|l| (name(l).to_string(), json!({"top": out.stats[l][0], "wall": out.stats[l][1], "solid": out.stats[l][2]}))).collect::<serde_json::Map<_, _>>(),
         "draws": out.batches.len(),
+        "landmarks": mark_meta,
         "bytes": {"top": out.vtop.len(), "wall": out.vwal.len(), "solid": out.vsol.len(), "index": out.idx.len() * 2, "ground": gtex.len() + htex.len(), "facade": facd.len() + facn.len(), "heights": hmap.len() * 2, "cells": near.len(), "largestCell": ncel.iter().map(|c| c.size).max().unwrap_or(0)},
     });
     let mut w = pack::Writer::default();
@@ -1124,9 +1136,37 @@ fn run() -> Result<(), String> {
         w.add(pack::FACN, facn);
         w.add(pack::LAMP, pack::slice_bytes(&lamp_map).to_vec());
     } else {
+        if target == Target::Pica {
+            // The lamps' light as a texture over the stored grid of heights, 1 024 texels a side: the 3DS adds
+            // it to the ground by night.
+            let side = 1024;
+            if gw > side || gh > side {
+                return Err("the grid of heights is wider than a texture of the 3DS".into());
+            }
+            let mut texels = vec![0u16; side * side];
+            for j in 0..gh {
+                for i in 0..gw {
+                    let mut sum = [0.0f32; 3];
+                    for jj in 0..keep {
+                        for ii in 0..keep {
+                            let o = (j * keep + jj) * heights.w + i * keep + ii;
+                            if lamp_map[o] != 0 {
+                                for k in 0..3 {
+                                    sum[k] += lamp_light[o][k];
+                                }
+                            }
+                        }
+                    }
+                    let q = |v: f32, levels: f32| ((v / (keep * keep) as f32 * 0.5).clamp(0.0, 1.0) * levels).round() as u16;
+                    texels[j * side + i] = (q(sum[0], 31.0) << 11) | (q(sum[1], 63.0) << 5) | q(sum[2], 31.0);
+                }
+            }
+            w.add(pack::LAMP, handheld::pica_tile(&texels, side, side));
+        }
         w.add(pack::HPIC, pack::slice_bytes(&hpic).to_vec());
         w.add(pack::HTEX, htex);
         w.add(pack::NCEL, pack::slice_bytes(&ncel).to_vec());
+        w.add(pack::LAND, pack::slice_bytes(&landmarks).to_vec());
     }
     w.add(pack::TOUR, pack::slice_bytes(&tour).to_vec());
     w.add(pack::LANE, pack::slice_bytes(&lanes).to_vec());

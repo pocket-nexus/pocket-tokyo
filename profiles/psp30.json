@@ -69,5 +69,16 @@
     "unit": 0.0078125,
     "store": 2
   },
-  "region": 1
+  "region": 1,
+  "landmarks": {
+    "reach": [
+      450,
+      1100
+    ],
+    "thick": [
+      0.0,
+      1.6,
+      3.2
+    ]
+  }
 }

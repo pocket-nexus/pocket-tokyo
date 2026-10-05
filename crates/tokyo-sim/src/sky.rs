@@ -101,3 +101,63 @@ pub fn by_sector(l: &Light) -> [[f32; 3]; tokyo_pack::SECTORS + 1] {
     }
     out
 }
+
+/// The sky as a dome of triangles around the eye, coloured at its vertices: rings of `DOME_SEGMENTS` vertices
+/// at the heights of `DOME_RINGS` (sines), from below the horizon up, and one vertex overhead.
+pub const DOME_SEGMENTS: usize = 16;
+pub const DOME_RINGS: [f32; 8] = [-0.34, -0.10, 0.0, 0.09, 0.21, 0.41, 0.67, 0.91];
+pub const DOME_VERTS: usize = DOME_SEGMENTS * DOME_RINGS.len() + 1;
+pub const DOME_INDICES: usize = (DOME_RINGS.len() - 1) * DOME_SEGMENTS * 6 + DOME_SEGMENTS * 3;
+
+/// The direction of a vertex of the dome.
+pub fn dome_dir(i: usize) -> V3 {
+    if i + 1 >= DOME_VERTS {
+        return V3::UP;
+    }
+    let y = DOME_RINGS[i / DOME_SEGMENTS];
+    let (r, a) = (sqrt(1.0 - y * y), (i % DOME_SEGMENTS) as f32 * TAU / DOME_SEGMENTS as f32);
+    v3(cos(a) * r, y, sin(a) * r)
+}
+
+/// The dome's triangles, seen from inside.
+pub fn dome_indices(out: &mut [u16]) {
+    let n = DOME_SEGMENTS as u16;
+    let mut at = 0;
+    let mut put = |t: [u16; 3]| {
+        out[at..at + 3].copy_from_slice(&t);
+        at += 3;
+    };
+    for ring in 0..DOME_RINGS.len() as u16 - 1 {
+        for k in 0..n {
+            let (a, b, c, d) = (ring * n + k, ring * n + (k + 1) % n, (ring + 1) * n + k, (ring + 1) * n + (k + 1) % n);
+            put([a, c, b]);
+            put([b, c, d]);
+        }
+    }
+    let top = (DOME_RINGS.len() as u16 - 1) * n;
+    for k in 0..n {
+        put([top + k, top + n, top + (k + 1) % n]);
+    }
+}
+
+/// The colour of the sky in a direction: haze at the horizon, the zenith's colour overhead, a glow around the
+/// sun, and below the horizon the land beyond the city under the same haze.
+pub fn dome_color(l: &Light, d: V3) -> [f32; 3] {
+    let glow = saturate(l.sun_dir.y * 6.0 + 0.6);
+    let around = [(0.6 + l.sun[0]) * glow, (0.45 + l.sun[1]) * glow, (0.3 + l.sun[2]) * glow];
+    let up = sqrt(saturate(d.y));
+    let down = saturate(-d.y * 3.0);
+    let s = saturate(d.dot(l.sun_dir));
+    let s8 = {
+        let s2 = s * s;
+        let s4 = s2 * s2;
+        s4 * s4
+    };
+    let s64 = {
+        let a = s8 * s8;
+        let b = a * a;
+        b * b
+    };
+    let sun = (s8 * 0.18 + s64 * 0.35) * (1.0 - down);
+    [0, 1, 2].map(|k| lerp(l.horizon[k], l.zenith[k], up) * (1.0 - 0.3 * down) + around[k] * sun)
+}

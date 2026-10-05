@@ -8,7 +8,7 @@
 use crate::mat;
 use crate::math::*;
 use alloc::vec::Vec;
-use tokyo_pack::{flag, kind, Batch, Block, Cell, City, Draws, Region, LODS, SECTORS};
+use tokyo_pack::{flag, kind, Batch, Block, Cell, City, Draws, Landmark, Region, LODS, SECTORS};
 
 /// The pack's tables.
 pub struct Tables<'a> {
@@ -18,12 +18,13 @@ pub struct Tables<'a> {
     pub cells: &'a [Cell],
     pub batches: &'a [Batch],
     pub spans: &'a [u32],
-    /// The batches of kind `CARD`: drawn whenever they are in view.
-    pub cards: &'a [u32],
+    /// Drawn whenever they are in view, each at the level of detail of its own distance.
+    pub landmarks: &'a [Landmark],
 }
 
 /// A draw of this frame: indices `from..to` of a batch, in the frame of a block or of a region.
 #[derive(Clone, Copy, Debug)]
+#[repr(C)]
 pub struct Item {
     pub batch: u32,
     pub place: u32,
@@ -275,10 +276,21 @@ pub fn select(t: &Tables, planes: &[[f32; 4]; 6], eye: V3, show: &Reach, ready: 
             by_cell(lists, &mut stats, region.far, ri as u32, true, &far, &far_boxes);
         }
     }
-    for &bi in this.cards {
-        let b = &this.batches[bi as usize];
-        if mat::visible(planes, &b.min, &b.max) {
-            lists[b.kind as usize].push(Item { batch: bi, place: b.spans, cell: u32::MAX, from: 0, to: b.idx_count, region: false, sector: MIXED });
+    for l in this.landmarks {
+        if !mat::visible(planes, &l.min, &l.max) {
+            continue;
+        }
+        let d = mat::box_distance(eye, &l.min, &l.max);
+        let draws = l.lods[if d < l.reach[0] { 0 } else if d < l.reach[1] { 1 } else { 2 }];
+        for bi in draws.first..draws.first + draws.count {
+            let b = &this.batches[bi as usize];
+            let item = Item { batch: bi, place: l.block, cell: u32::MAX, from: 0, to: b.idx_count, region: false, sector: MIXED };
+            if b.spans == u32::MAX {
+                lists[b.kind as usize].push(item);
+            } else {
+                // (seen from both sides: every sector)
+                arcs(&mut lists[b.kind as usize], &mut stats.turned, item, &this.spans[b.spans as usize..b.spans as usize + SECTORS + 2], None, show.split);
+            }
         }
     }
     stats
