@@ -1,6 +1,6 @@
 # Pocket Tokyo in a browser tab
 
-The city of the handheld builds, drawn with [wgpu](https://wgpu.rs) 25: over WebGPU in a tab (wasm32), and over Metal on the machine that builds it, where a frame goes to a file. It reads the iPod touch's pack (`profiles/ipod60.json`) as it is and draws the iPod touch's passes. The game's own interface (`ui/`) runs over it, and the page shows it as one of the four handhelds: its screens, its presentation of the interface, its buttons. `web/` is something else: the three.js model the city is compiled from.
+The city of the handheld builds, drawn with [wgpu](https://wgpu.rs) 25: over WebGPU in a tab (wasm32), and over Metal on the machine that builds it, where a frame goes to a file. It reads the iPod touch's pack (`profiles/ipod60.json`) as it is and draws the iPod touch's passes. The game's own interface (`ui/`) runs over it, and the page shows it as one of four handhelds (PS Vita, PSP, Nintendo 3DS, iPod touch): its screens, its presentation of the interface, its buttons. `web/` is something else: the three.js model the city is compiled from.
 
 | Part | What it is |
 | --- | --- |
@@ -10,7 +10,7 @@ The city of the handheld builds, drawn with [wgpu](https://wgpu.rs) 25: over Web
 | `src/app.rs` | The shell: a frame as `step`, the guest's turn, `draw`; the reads of cells and of blocks' pictures; the screen's shape and each handheld's pad. |
 | `src/web.rs`, `page/` | The tab: what the page calls, the page itself, and the worker that sweeps the shadows. |
 | `src/bin/shot.rs` | A frame on this machine's GPU, written to a PNG, and two pictures compared. |
-| `vendor/pocketjs/devices/web/pocket-web-wgpu` | PocketJS's browser kernel: what is not this game's. The device and the screens, the overlay pass, 16-bit pictures, ranges of a pack, and the page's modules (the title card first and the frame loop, the interface's guest in its realm, a handheld's controls, its screens). Its README states what a game implements; this directory is that for Pocket Tokyo. |
+| `vendor/pocketjs/devices/web/pocket-web-wgpu` | PocketJS's browser kernel: what is not this game's. The device and the screens, the overlay pass, 16-bit pictures, ranges of a pack, and the page's modules (the title card first and the frame loop, the interface's guest in its realm, a handheld's controls, its screens, and the stylesheet that lays those out, which the page links). Its README states what a game implements; this directory is that for Pocket Tokyo. |
 | `tools/wgpu.ts` | cook, build, serve, dist, shot, counts, check. |
 
 ```
@@ -42,18 +42,18 @@ The source has two forms:
 - **The pack's file**, on a server that answers byte ranges: each read is a request with a `Range` header. `serve` does this.
 - **The pack cut into pieces of one size** with a manifest that lists them (`<meta name="pocket-pack">` names a `.json`). A read fetches the pieces it lies in, whole and with plain requests, all at once; two reads that need one piece share its request; the last 32 MiB of pieces stay in the page's memory, outside the module's. `dist` writes this form.
 
-`bun tools/wgpu.ts dist` writes `.pocket-build/wgpu/dist` for a host that limits a file to 32 MiB and keeps a file ten minutes in a browser's cache (Pocket Studio's site deployments): `index.html` and `icon.png`; everything else of the site under `app/<build>/`, named by a hash of its contents (the module, PocketJS's UI core, the page's scripts, the interface for each device); `pack/<hash>.json` and the pieces, each named by its own hash. Only the page is asked for again at every visit, so a deployment of new code cannot meet an old piece of the pack or half of an old module. The pieces and their manifest are cut by the kernel's tool (`cutPack`). With pieces of 2 MiB the directory is **116 files and 184.0 MB**: 85 pieces and their manifest (177.1 MB), 28 files of the site (6.9 MB), the page and the icon. The largest file is the PS Vita's interface pak, 2.8 MB. `dist` refuses a directory the host would (a file over 32 MiB, more than 4 000 files or 1 GiB, a top-level `play/` or `runtime/`). Nothing uploads it.
+`bun tools/wgpu.ts dist` writes `.pocket-build/wgpu/dist` for a host that limits a file to 32 MiB and keeps a file ten minutes in a browser's cache (Pocket Studio's site deployments): `index.html` and `icon.png`; everything else of the site under `app/<build>/`, named by a hash of its contents (the module, PocketJS's UI core, the page's scripts and the stage's stylesheet, the interface for each device); `pack/<hash>.json` and the pieces, each named by its own hash. Only the page is asked for again at every visit, so a deployment of new code cannot meet an old piece of the pack or half of an old module. The pieces and their manifest are cut by the kernel's tool (`cutPack`). With pieces of 2 MiB the directory is **117 files and 184.0 MB**: 85 pieces and their manifest (177.1 MB), 29 files of the site (6.9 MB), the page and the icon. The largest file is the PS Vita's interface pak, 2.8 MB. `dist` refuses a directory the host would (a file over 32 MiB, more than 4 000 files or 1 GiB, a top-level `play/` or `runtime/`). Nothing uploads it.
 
 ## The interface
 
 The interface is the game's own: `ui/`, compiled for a device by `tools/ui.ts`, the bundle and its pak as that device loads them. The page runs it as a guest in a realm of its own: PocketJS's AppInstance (`app-instance.html`, a hidden frame) on the UI core built for wasm (`pocketjs.wasm`), started without the text worker. The guest opens the same service it opens on a device, `pocket.overlay`, and the lines are carried in the page:
 
 1. `step`: `tk_step` takes what the guest asked for on its last turn (`start`, `menu`, `tour`, `hour`, `drive`, `look`, …), runs the flight and writes the state the interface is shown. The flow from the title into a flight and the menu over it is `tokyo_interface::Session`, as on every device.
-2. The guest's turn, on the frames `tk_guest_due` says it is worth one: the line of state it has not seen goes in (`heard`), the buttons and the contacts of the turn with it, and what it sends comes back (`say`). The UI core then advances the frame's sixtieths of a second.
+2. The guest's turn. **A turn is offered as often as the device's own host offers one**: 30 times a second on the PS Vita, the PSP and the 3DS, 60 on the iPod touch (`turns` in `SHAPES`). The realm is told that rate before the bundle runs (`simHz`, the device's `globalThis.__simHz`), so the guest's clock counts a turn as on the device. A turn is taken on the frames `tk_guest_due` says it is worth one: the line of state it has not seen goes in (`heard`), with the contacts and the buttons held at any moment since a turn was last offered, and what it sends comes back (`say`). The UI core then advances the turn's sixtieths of a second: 2 at 30 turns a second.
 3. When the guest's draw hash has changed, its picture is drawn again and handed to the renderer.
 4. `draw`: the scene, then the picture over it in a pass of its own, premultiplied.
 
-**The picture comes with its alpha in one drawing.** PocketJS's UI core rasterizes the interface into a buffer cleared to zero and keeps what its ops cover (`renderPremultiplied`); the renderer lays those pixels over the scene as they are (`Overlay::write`). A redraw of the PS Vita's interface, 960 × 544 at two samples a logical pixel, takes 1.6 ms of an M3 Max: 0.85 ms for the drawing, the rest for the copy into the module and the upload. It happens 16 times a second in a flight, when the numbers change. Before the UI core had that render the page drew the interface twice, over black and over white, and took the difference: 3.3 ms a redraw.
+**The picture comes with its alpha in one drawing.** PocketJS's UI core rasterizes the interface into a buffer cleared to zero and keeps what its ops cover (`renderPremultiplied`); the renderer lays those pixels over the scene as they are (`Overlay::write`). A redraw of the PS Vita's interface, 960 × 544 at two samples a logical pixel, takes 1.6 ms of an M3 Max: 0.85 ms for the drawing, the rest for the copy into the module and the upload. It happens 14 times a second in a flight, when the numbers change. Before the UI core had that render the page drew the interface twice, over black and over white, and took the difference: 3.3 ms a redraw.
 
 A device's second screen is the interface's alone: the 3DS's lower screen is drawn into a canvas of its own from the core's opaque pixels, when its own draw hash changes (`drawHashAuxiliary`): 1.4 ms a redraw, 7 times a second in a flight. Drawn on every turn of the guest, as before that hash, it was 23 times a second.
 
@@ -61,14 +61,14 @@ The settings the interface keeps (`prefs`) are in the browser's `localStorage`, 
 
 ## The devices
 
-The page shows one handheld at a time. A device is the renderer's shape (`SHAPES` in `src/app.rs`: the size, the samples a pixel, the triangles a frame may draw, the frames a second, and what its buttons do for the flight), the interface's bundle for it, and the build plan PocketJS wrote for that bundle, from which the page reads the screens, the raster density and which surface takes touch.
+The page shows one handheld at a time. A device is the renderer's shape (`SHAPES` in `src/app.rs`: the size, the samples a pixel, the triangles a frame may draw, the frames a second, the interface's turns a second, and what its buttons do for the flight), the interface's bundle for it, and the build plan PocketJS wrote for that bundle, from which the page reads the screens, the raster density and which surface takes touch.
 
-| | Scene | Interface | Frames a second | Touch |
-| --- | --- | --- | --- | --- |
-| PS Vita | 960 × 544 | `single`, 480 × 272 at two samples a pixel | 60 | the screen takes taps |
-| PSP | 480 × 272 | `single`, 480 × 272 | 30 | none |
-| Nintendo 3DS | 400 × 240 | `dual`: 400 × 240 over it, and a 320 × 240 screen under it | 30 | the lower screen |
-| iPod touch | 480 × 320 | `touch`, 480 × 320 | 60 | the screen; no buttons |
+| | Scene | Interface | Frames a second | Turns of the interface a second | Touch |
+| --- | --- | --- | --- | --- | --- |
+| PS Vita | 960 × 544 | `single`, 480 × 272 at two samples a pixel | 60 | 30 | the screen takes taps |
+| PSP | 480 × 272 | `single`, 480 × 272 | 30 | 30 | none |
+| Nintendo 3DS | 400 × 240 | `dual`: 400 × 240 over it, and a 320 × 240 screen under it | 30 | 30 | the lower screen |
+| iPod touch | 480 × 320 | `touch`, 480 × 320 | 60 | 60 | the screen; no buttons |
 
 The devices are text at the top of the page; picking another in a flight changes the screen's shape, starts that device's guest in a new realm and leaves the flight as it is: the new guest is told the whole state on its first turn. The first device is the iPod touch for a browser whose pointer is a finger and the PS Vita otherwise (`?device=`).
 
@@ -123,7 +123,8 @@ Chrome 154 (headless, WebGPU on the Apple GPU, Metal 3) on an M3 Max, the pack o
 | A redraw of the interface's picture | 1.61 ms | 0.44 ms | 0.38 ms | 1.18 ms |
 | of which the UI core's drawing | 0.85 ms | 0.25 ms | 0.23 ms | 0.97 ms |
 | The same redraw from two drawings, before | 3.34 ms | 0.89 ms | 0.76 ms | 2.28 ms |
-| Redraws a second | 16.4 | 16.6 | 16.6 | 16.4 |
+| Redraws a second | 13.8 | 16.4 | 16.6 | 16.4 |
+| Turns the guest took a second | 20.0 of 30 | 20.8 of 30 | 20.6 of 30 | 26.2 of 60 |
 | A turn of the guest | 0.04 ms | 0.04 ms | 0.04 ms | 0.03 ms |
 | The second screen | | | 1.42 ms a redraw, 7.0 a second (before: every turn, 23 a second) | |
 | Triangles and draws of the frame measured | 53 400, 356 | 37 400, 313 | 49 000, 352 | 22 400, 254 |
