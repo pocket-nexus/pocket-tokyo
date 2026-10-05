@@ -10,7 +10,7 @@ type Slow = Omit<HostState, "t">;
 type Signals = { [K in keyof Slow]: Accessor<Slow[K]> };
 
 const initial: Slow = {
-  mode: "loading", message: "", tour: true, options: [], stats: "", prefs: "",
+  mode: "loading", message: "", tour: true, options: [], stats: "", prefs: "", woke: 0,
 };
 
 function same(a: unknown, b: unknown): boolean {

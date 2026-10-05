@@ -77,10 +77,11 @@ function Plate(props: { width: number; height: number }) {
 }
 
 /**
- * Tokyo's clock: what the sky is doing over the hour and the minute. The
- * digits stand at the left of a cell of fixed size: a number written to its
- * node keeps the place layout gave the last one, so text that is centred or
- * set to the right would drift.
+ * Tokyo's clock: what the sky is doing over the hour and the minute; where
+ * `compact`, the hour and the minute alone (a column 65 pixels wide holds no
+ * "AFTERNOON"). The digits stand at the left of a cell of fixed size: a
+ * number written to its node keeps the place layout gave the last one, so
+ * text that is centred or set to the right would drift.
  */
 export function Clock(props: { host: Host; compact?: boolean }) {
   let digits: NodeMirror | undefined, word: NodeMirror | undefined;
@@ -93,11 +94,13 @@ export function Clock(props: { host: Host; compact?: boolean }) {
     const now = phase(minutes);
     if (now !== named) hotText(word, (named = now));
   })));
-  const width = () => (props.compact ? 62 : 76);
+  const width = () => (props.compact ? 52 : 76);
   return (
     <View class="relative flex-col" style={{ width: width() }}>
-      <Plate width={width()} height={props.compact ? 40 : 46} />
-      <Text ref={word} class="text-xs font-bold tracking-wide" style={{ width: width(), height: 14, textColor: DIM }}>MIDDAY</Text>
+      <Plate width={width()} height={props.compact ? 24 : 46} />
+      <Show when={!props.compact}>
+        <Text ref={word} class="text-xs font-bold tracking-wide" style={{ width: width(), height: 14, textColor: DIM }}>MIDDAY</Text>
+      </Show>
       <Text ref={digits} class={props.compact ? "text-lg font-bold" : "text-2xl font-bold"} style={{ width: width(), height: props.compact ? 24 : 30, textColor: INK }}>12:00</Text>
     </View>
   );
@@ -107,6 +110,9 @@ export function Clock(props: { host: Host; compact?: boolean }) {
  *  the tour carries the eye a mark says so. */
 export function Place(props: { flight: Flight; width: number }) {
   const host = props.flight.host;
+  // The name is written to its node: a new place lays nothing out.
+  let name: NodeMirror | undefined;
+  createEffect(() => hotText(name, props.flight.place()));
   return (
     <View class="relative flex-col" style={{ width: props.width }}>
       <Plate width={props.width} height={40} />
@@ -119,7 +125,7 @@ export function Place(props: { flight: Flight; width: number }) {
           </View>
         </Show>
       </View>
-      <Text class="text-lg font-bold" style={{ textColor: INK }}>{props.flight.place()}</Text>
+      <Text ref={name} class="text-lg font-bold" style={{ width: props.width, height: 24, textColor: INK }}>{AREA.name}</Text>
     </View>
   );
 }
@@ -147,35 +153,54 @@ export function Readout(props: { host: Host; of: "altitude" | "speed"; compact?:
 /** Pixels of tape per degree of heading. */
 const TAPE = 1;
 const POINTS = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"];
+/** Steps a mark of the tape fades through at an end of the window. */
+const FADE = 4;
 
 /**
  * The heading as a tape: the points of the compass slide under a mark at the
  * middle, and the bearing stands under it in degrees. The tape is one node
  * that moves; a new heading lays nothing out.
+ *
+ * The window's ends cut the tape with a clip, which a GE, a PICA200 and
+ * OpenGL ES do with a scissor. With `fade` no clip is used: a mark that
+ * reaches an end fades out, which is one more write to its node. That is for
+ * the Vita, whose host draws a clip as a pass over the whole screen's
+ * stencil, in the scene the city is drawn in; the comparisons it takes each
+ * turn are a millisecond of a PSP's.
  */
-export function Compass(props: { host: Host; width: number }) {
+export function Compass(props: { host: Host; width: number; fade?: boolean }) {
   let tape: NodeMirror | undefined, degrees: NodeMirror | undefined;
   let shown = -1;
+  // The points from a quarter turn before north to a quarter past the next north: the window never
+  // looks past either end. Between two points stands a tick.
+  const marks = Array.from({ length: 13 }, (_, i) => ({ at: (i - 2) * 45, label: undefined as NodeMirror | undefined, tick: undefined as NodeMirror | undefined, steps: [-1, -1] }));
+  /** How much of a mark `offset` degrees from the heading shows, in steps of the fade. */
+  const step = (offset: number) => (props.fade ? Math.max(0, Math.min(FADE, Math.round((props.width / 2 - 6 - Math.abs(offset) * TAPE) / 4))) : FADE);
+  const fade = (heading: number) => {
+    for (const mark of marks) {
+      const now = [step(mark.at - heading), step(mark.at + 22 - heading)];
+      if (now[0] !== mark.steps[0]) hotProp(mark.label, "opacity", (mark.steps[0] = now[0]) / FADE);
+      if (now[1] !== mark.steps[1]) hotProp(mark.tick, "opacity", (mark.steps[1] = now[1]) / FADE);
+    }
+  };
   onMount(() => onCleanup(props.host.onNumbers((t) => {
     const heading = t[T.heading];
     if (heading === shown) return;
     shown = heading;
     hotProp(tape, "translateX", Math.round(props.width / 2 - heading * TAPE));
+    if (props.fade) fade(heading);
     hotText(degrees, `${heading < 10 ? "00" : heading < 100 ? "0" : ""}${heading}° ${point(heading)}`);
   })));
-  // The points from a quarter turn before north to a quarter past the next north: the window never
-  // looks past either end.
-  const marks = Array.from({ length: 13 }, (_, i) => (i - 2) * 45);
   return (
     <View class="relative" style={{ width: props.width, height: 38 }}>
       <Plate width={props.width} height={38} />
-      <View class="absolute overflow-hidden" style={{ insetL: 0, insetT: 0, width: props.width, height: 20 }}>
+      <View class={props.fade ? "absolute" : "absolute overflow-hidden"} style={{ insetL: 0, insetT: 0, width: props.width, height: 20 }}>
         <View ref={tape} class="absolute" style={{ insetL: 0, insetT: 0, width: 1, height: 20, translateX: Math.round(props.width / 2) }}>
           <For each={marks}>
-            {(at) => (
+            {(mark) => (
               <>
-                <Text class="absolute text-xs font-bold text-center" style={{ insetL: at * TAPE - 12, insetT: 5, width: 24, textColor: at % 90 === 0 ? INK : DIM }}>{POINTS[(((at / 45) % 8) + 8) % 8]}</Text>
-                <View class="absolute" style={{ insetL: at * TAPE + 22, insetT: 9, width: 1, height: 5, bgColor: FAINT }} />
+                <Text ref={mark.label} class="absolute text-xs font-bold text-center" style={{ insetL: mark.at * TAPE - 12, insetT: 5, width: 24, opacity: step(mark.at) / FADE, textColor: mark.at % 90 === 0 ? INK : DIM }}>{POINTS[(((mark.at / 45) % 8) + 8) % 8]}</Text>
+                <View ref={mark.tick} class="absolute" style={{ insetL: mark.at * TAPE + 22, insetT: 9, width: 1, height: 5, opacity: step(mark.at + 22) / FADE, bgColor: FAINT }} />
               </>
             )}
           </For>

@@ -4,7 +4,7 @@
 // the menu.
 import { createEffect, on, Show } from "solid-js";
 import { Text, View } from "@pocketjs/framework/components";
-import { glyph } from "@pocketjs/framework/modality";
+import { glyph, surfaceHasTouch } from "@pocketjs/framework/modality";
 import { createFlight, createPulse, type Flight } from "../flight.ts";
 import { AREA } from "../generated/area.ts";
 import { connectHost } from "../host.ts";
@@ -64,14 +64,14 @@ function Title(props: { flight: Flight; menu: Menu }) {
 function Instruments(props: { flight: Flight }) {
   const host = props.flight.host;
   // What the buttons do shows when a flight begins, then leaves the view clear.
-  const [hint, showHint] = createPulse(7);
+  const [hint, showHint] = createPulse(host, 7);
   createEffect(on(host.mode, (mode, before) => mode === "flight" && before === "title" && showHint()));
   return (
     <View class="relative w-full h-full">
       <View class="absolute" style={{ insetL: 18, insetT: 12 }}><Place flight={props.flight} width={190} /></View>
       <View class="absolute" style={{ insetR: 16, insetT: 12 }}><Clock host={host} /></View>
       <View class="absolute" style={{ insetL: 18, insetB: 12 }}><Readout host={host} of="altitude" /></View>
-      <View class="absolute" style={{ insetL: W / 2 - 66, insetB: 12 }}><Compass host={host} width={132} /></View>
+      <View class="absolute" style={{ insetL: W / 2 - 66, insetB: 12 }}><Compass host={host} width={132} fade={surfaceHasTouch()} /></View>
       <View class="absolute" style={{ insetR: 16, insetB: 12 }}><Readout host={host} of="speed" /></View>
       <View class="absolute" style={{ insetL: 0, insetT: 74 }}><Note flight={props.flight} width={W} /></View>
       <View class="absolute" style={{ insetL: 12, insetT: 62 }}><Stats host={host} /></View>

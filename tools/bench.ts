@@ -2,8 +2,8 @@
 //
 //   bun tools/tokyo.ts bench [--seconds 150] [--hour 15.5] [--rate 0.03] [--ctl '{"budget":180000}'] [--share DIR]
 //
-// Starts the tour from its first place at the given hour, samples the running process's status receipt once a
-// second and writes the evidence to `.pocket-build/validation/vita/bench-<time>/device.json`. The identity
+// Puts the flow in flight on the tour (the interface's instruments on the screen) from the tour's first place at
+// the given hour, samples the running process's status receipt once a second and writes the evidence to `.pocket-build/validation/vita/bench-<time>/device.json`. The identity
 // (native build, pack hash) comes from what the device reports and must not change during the window.
 
 import { mkdirSync, writeFileSync } from "node:fs";
@@ -20,6 +20,9 @@ interface Sample {
   late: number;
   frames: number;
   cpuMs: number;
+  /** The interface: its turn (script, layout) and its draw, milliseconds a frame. */
+  interfaceMs: number;
+  interfaceDrawMs: number;
   triangles: number;
   draws: number;
   places: number[];
@@ -39,7 +42,7 @@ export async function bench(argv: string[]) {
   };
   const seconds = Number(arg("--seconds", "150"));
   const extra = JSON.parse(arg("--ctl", "{}"));
-  ctl(argv, JSON.stringify({ tour: true, restart: true, profile: false, view: null, hour: Number(arg("--hour", "15.5")), rate: Number(arg("--rate", "0.03")), budget: 200000, nonce: Date.now(), ...extra }));
+  ctl(argv, JSON.stringify({ mode: "flight", interface: true, tour: true, restart: true, profile: false, view: null, hour: Number(arg("--hour", "15.5")), rate: Number(arg("--rate", "0.03")), budget: 200000, nonce: Date.now(), ...extra }));
   await Bun.sleep(2500);
   const first = status(argv);
   const evidence = new DeviceEvidence<Sample>(identity(first));
@@ -52,7 +55,7 @@ export async function bench(argv: string[]) {
     const e = s.engine;
     if (e.frames === prev.frames) continue;
     const t = e.city.tris;
-    const sample: Sample = { t: (Date.now() - start) / 1000, frameMs: e.frameMs, worstMs: e.worstMs, late: e.late, frames: e.frames, cpuMs: e.cpuMs.draw, triangles: t.top + t.wall + t.solid, draws: e.city.draws, places: e.city.places, scale: e.governor.scale, hour: e.clock.hour };
+    const sample: Sample = { t: (Date.now() - start) / 1000, frameMs: e.frameMs, worstMs: e.worstMs, late: e.late, frames: e.frames, cpuMs: e.cpuMs.draw, interfaceMs: e.cpuMs.interface ?? 0, interfaceDrawMs: e.cpuMs.interfaceDraw ?? 0, triangles: t.top + t.wall + t.solid, draws: e.city.draws, places: e.city.places, scale: e.governor.scale, hour: e.clock.hour };
     evidence.observe(identity(s), sample);
     samples.push(sample);
     prev = e;
@@ -73,6 +76,7 @@ export async function bench(argv: string[]) {
     triangles: { least: Math.min(...of((s) => s.triangles)), mean: Math.round(mean(of((s) => s.triangles))), most: Math.max(...of((s) => s.triangles)) },
     draws: { mean: Math.round(mean(of((s) => s.draws))), most: Math.max(...of((s) => s.draws)) },
     cpuDrawMs: mean(of((s) => s.cpuMs)),
+    interface: { up: first.engine.interface?.up ?? false, turnMs: mean(of((s) => s.interfaceMs)), drawMs: mean(of((s) => s.interfaceDrawMs)), turns: (prev.interface?.turns ?? 0) - (first.engine.interface?.turns ?? 0), worstTurnMs: prev.interface?.worstTurnMs ?? 0 },
     governorScale: { least: Math.min(...of((s) => s.scale)), mean: mean(of((s) => s.scale)) },
     hours: [samples[0]!.hour, samples.at(-1)!.hour],
     msaa: first.engine.msaa,

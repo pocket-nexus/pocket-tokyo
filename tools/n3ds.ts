@@ -1,16 +1,23 @@
 #!/usr/bin/env bun
-// Pocket Tokyo on Nintendo 3DS: build the Rust core and the C host into a
-// .3dsx (devkitARM in PocketJS's pinned container), install and start it over
-// PocketJS's paired LAN wire, steer and measure it.
+// Pocket Tokyo on Nintendo 3DS: build the Rust core, the interface (ui/) and
+// the C host into a .3dsx (devkitARM in PocketJS's pinned container), install
+// and start it over PocketJS's paired LAN wire, steer and measure it.
 //
-//   bun tools/n3ds.ts build                     # dist/3ds/pocket-tokyo.3dsx, the pack in its ROMFS
+//   bun tools/n3ds.ts build [--no-ui]           # dist/3ds/pocket-tokyo.3dsx, the pack and the interface in its ROMFS
+//                                               # (--no-ui keeps the interface as last compiled)
 //   bun tools/n3ds.ts install [--no-build]      # build, send, start, wait for the program to report
 //   bun tools/n3ds.ts status
-//   bun tools/n3ds.ts ctl "tour=1 hour=18"      # tokyo_sim::flight::Flight::control words
+//   bun tools/n3ds.ts ctl "tour=1 hour=18"      # tokyo_sim::flight::Flight::control words, and:
+//                                               #   mode=title|flight|menu (the flow, outright)
+//                                               #   ui=tour|fly|menu|resume|title (what the interface would ask)
+//                                               #   press=MASK (PocketJS BTN bits on the interface; 0 rests)
+//                                               #   touch=X,Y | touch=off (a stylus on the lower screen)
 //   bun tools/n3ds.ts capture [--out f.png] [--surface top|auxiliary]
 //   bun tools/n3ds.ts bench [--seconds 60] [--install]   # the tour's frame timings → .pocket-build/validation/3ds/
-//   bun tools/n3ds.ts emu [--frames 90] [--ctl "view=..."] [--out f.png]
-//                                               # the same .3dsx in Azahar (software PICA): a frame and its status
+//   bun tools/n3ds.ts trace [--seconds 60]      # the tour's eye a few times a second: how fast it moves and climbs
+//   bun tools/n3ds.ts emu [--frames 90] [--ctl "view=..."] [--out f.png] [--prefs JSON]
+//                                               # the same .3dsx in Azahar (software PICA): both screens of a
+//                                               # frame (the lower one under the upper) and the status
 //
 // `--host ADDRESS` (default 192.168.8.159, or POCKET_3DS_HOST). The console
 // must run a Pocket Runtime build with the paired wire: this program itself
@@ -22,9 +29,10 @@ import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { deflateSync } from "node:zlib";
 import { pocketRuntimeDeviceId } from "../vendor/pocketjs/contracts/spec/pocket-runtime-wire.ts";
+import { extractHostBuildInputs } from "../vendor/pocketjs/framework/src/manifest/index.ts";
 import { withDeviceLease } from "../vendor/pocketjs/tools/device-lease.ts";
-import { THREE_DS_DEV_HOST_ABI, THREE_DS_DEV_TARGET_ID } from "../vendor/pocketjs/tools/3ds-profile.ts";
-import { runContainer } from "../vendor/pocketjs/tools/3ds-toolchain.ts";
+import { ensureQuickJs, runContainer, THREE_DS_CONTAINER_IMAGE } from "../vendor/pocketjs/tools/3ds-toolchain.ts";
+import { compileInterface } from "./ui.ts";
 
 const ROOT = resolve(import.meta.dir, "..");
 const POCKETJS = join(ROOT, "vendor/pocketjs");
@@ -84,9 +92,25 @@ function encodePng(rgba: Uint8Array, w: number, h: number): Uint8Array {
   return Buffer.concat([new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]), chunk("IHDR", head), chunk("IDAT", deflateSync(raw)), chunk("IEND", new Uint8Array(0))]);
 }
 
+/** PocketJS's UI core for the 3DS: a Rust static library, built on the host with the compiler its crate pins. */
+async function interfaceCore(): Promise<string> {
+  const { RUSTUP_TOOLCHAIN: _toolchain, RUSTC: _rustc, ...environment } = process.env;
+  await $`cargo build --release --locked`.cwd(join(POCKETJS, "hosts/3ds/core")).env({ ...environment, CARGO_TARGET_DIR: join(DIR, "ui-core") });
+  return join(DIR, "ui-core/armv6k-nintendo-3ds/release/libpocketjs_3ds_core.a");
+}
+
 async function build() {
   if (!existsSync(PACK)) throw new Error(`no pack at ${PACK}: run \`bun tools/tokyo.ts cook --profile n3ds30\` first`);
+  // The interface: its bundle and pak for this device, and the plan they were resolved against.
+  const uiDirectory = join(ROOT, ".pocket-build/ui/3ds");
+  const ui = argv.includes("--no-ui") ? extractHostBuildInputs(JSON.parse(readFileSync(join(uiDirectory, "plan.json"), "utf8"))) : (await compileInterface("3ds", opt("--area", "shiba"))).inputs;
+  const aux = ui.surfaces?.auxiliary.logical;
+  if (ui.viewport.logical.join("x") !== "400x240" || aux?.join("x") !== "320x240") throw new Error("the interface's 3DS presentation is not 400x240 over 320x240");
   await $`rustup run nightly-2026-07-02 cargo build --release`.cwd(join(ROOT, "n3ds/core"));
+  const core = "n3ds/core/target/armv6k-nintendo-3ds/release/libtokyo_n3ds_core.a";
+  const uiCore = await interfaceCore();
+  const mounts = [{ hostPath: ROOT, containerPath: "/tokyo" }];
+  await ensureQuickJs(join(DIR, "quickjs"), THREE_DS_CONTAINER_IMAGE, mounts);
   const romfs = join(DIR, "romfs");
   mkdirSync(romfs, { recursive: true });
   mkdirSync(join(DIR, "build"), { recursive: true });
@@ -96,27 +120,33 @@ async function build() {
     cpSync(PACK, join(romfs, "city.pack"));
     writeFileSync(mark, JSON.stringify({ sha256: packSha }));
   }
-  // The build's identity: the sources, the core library and the pack.
+  // The build's identity: the sources, both Rust libraries, the interface and the pack.
   const id = new Bun.CryptoHasher("sha256");
   for (const f of readdirSync(join(ROOT, "n3ds/src")).sort()) id.update(readFileSync(join(ROOT, "n3ds/src", f)));
-  id.update(readFileSync(join(ROOT, "n3ds/core/target/armv6k-nintendo-3ds/release/libtokyo_n3ds_core.a")));
+  for (const f of [join(ROOT, core), uiCore, join(uiDirectory, "tokyo.js"), join(uiDirectory, "tokyo.pak")]) id.update(readFileSync(f));
   id.update(packSha);
   const buildId = id.digest("hex").slice(0, 12);
-  const header = `#define POCKETJS_HOST_ABI ${THREE_DS_DEV_HOST_ABI}\n#define POCKETJS_TARGET_ID "${THREE_DS_DEV_TARGET_ID}"\n#define TOKYO_BUILD_ID "${buildId}"\n`;
+  // The guest refuses a bundle resolved for another target or host ABI: both come from the interface's plan.
+  const header = `#define POCKETJS_HOST_ABI ${ui.hostAbi}\n#define POCKETJS_TARGET_ID "${ui.target}"\n#define TOKYO_BUILD_ID "${buildId}"\n`;
   const config = join(DIR, "build/config.h");
   if (!existsSync(config) || readFileSync(config, "utf8") !== header) writeFileSync(config, header);
   // Compile a snapshot on the container's own filesystem: the shared mount can show a stale size for a file
-  // that was just rewritten, on either side. The snapshot's name is new each build.
+  // that was just rewritten, on either side. The snapshot's name is new each build. It holds everything this
+  // build wrote: the sources, both Rust libraries and the interface. The pack is copied through the mount
+  // and checked against its hash; PocketJS's sources and QuickJS are read through the mount as they are.
   const snapshot = `source-${buildId}-${Date.now()}.tar`;
   for (const f of readdirSync(DIR).filter((f) => f.startsWith("source-"))) rmSync(join(DIR, f));
+  const uiCoreInTar = ".pocket-build/3ds/ui-core/armv6k-nintendo-3ds/release/libpocketjs_3ds_core.a";
   // The app icon is Pocket3D's: the snapshot takes its two sizes under the path n3ds/Makefile reads them from.
-  await $`tar --no-xattrs -cf ${join(DIR, snapshot)} n3ds/src n3ds/Makefile ${ICONS}/icon.png ${ICONS}/icon-small.png .pocket-build/3ds/build/config.h`.cwd(ROOT);
+  await $`tar --no-xattrs -cf ${join(DIR, snapshot)} n3ds/src n3ds/Makefile ${ICONS}/icon.png ${ICONS}/icon-small.png .pocket-build/3ds/build/config.h ${core} ${uiCoreInTar} .pocket-build/ui/3ds/tokyo.js .pocket-build/ui/3ds/tokyo.pak`.cwd(ROOT);
   await runContainer(
-    `mkdir -p /tmp/source /tmp/build && tar -xf /tokyo/.pocket-build/3ds/${snapshot} -C /tmp/source
+    `mkdir -p /tmp/source /tmp/build /tmp/romfs && tar -xf /tokyo/.pocket-build/3ds/${snapshot} -C /tmp/source
 cp /tmp/source/.pocket-build/3ds/build/config.h /tmp/build/config.h
-make -f /tmp/source/n3ds/Makefile -j8 BUILD=/tmp/build SOURCE=/tmp/source/n3ds/src
+cp /tokyo/.pocket-build/3ds/romfs/city.pack /tmp/source/.pocket-build/ui/3ds/tokyo.js /tmp/source/.pocket-build/ui/3ds/tokyo.pak /tmp/romfs/
+echo "${packSha}  /tmp/romfs/city.pack" | sha256sum -c -
+make -f /tmp/source/n3ds/Makefile -j8 BUILD=/tmp/build SOURCE=/tmp/source/n3ds/src ROMFS=/tmp/romfs CORE=/tmp/source/${core} UI_CORE=/tmp/source/${uiCoreInTar}
 cp /tmp/build/tokyo.elf /tmp/build/tokyo.map /tokyo/.pocket-build/3ds/build/`,
-    [{ hostPath: ROOT, containerPath: "/tokyo" }],
+    mounts,
     "/tokyo",
     {},
     "Pocket Tokyo build",
@@ -124,7 +154,10 @@ cp /tmp/build/tokyo.elf /tmp/build/tokyo.map /tokyo/.pocket-build/3ds/build/`,
   const bytes = readFileSync(ARTIFACT).length;
   if (bytes > 32 * 1024 * 1024) throw new Error(`the .3dsx is ${bytes} bytes; the wire installs at most 32 MiB`);
   mkdirSync(RECEIPTS, { recursive: true });
-  const receipt = { target: "3ds", buildId, bytes, sha256: sha(ARTIFACT), packSha256: packSha };
+  const receipt = {
+    target: "3ds", buildId, bytes, sha256: sha(ARTIFACT), packSha256: packSha,
+    interface: { target: ui.target, hostAbi: ui.hostAbi, js: sha(join(uiDirectory, "tokyo.js")), pak: sha(join(uiDirectory, "tokyo.pak")) },
+  };
   writeFileSync(join(RECEIPTS, "build.json"), JSON.stringify(receipt, null, 1) + "\n");
   console.log(`3ds: ${ARTIFACT} ${(bytes / 1e6).toFixed(1)} MB, build ${buildId}`);
   return receipt;
@@ -251,7 +284,7 @@ switch (cmd) {
       // With --install the transfer and the measurement share the lease.
       if (argv.includes("--install")) await install(lease, build);
       await session(async (c) => {
-        const first = await status(c, `tour=1 restart=1 view=off ${extra}`);
+        const first = await status(c, `mode=flight tour=1 restart=1 view=off ${extra}`);
         if (first.build !== build.buildId) throw new Error(`the console runs build ${first.build}, not ${build.buildId}`);
         await Bun.sleep(4000);
         const start = Date.now();
@@ -261,7 +294,7 @@ switch (cmd) {
           // Each sample costs the console a late frame or so: answering takes it a few milliseconds.
           await Bun.sleep(5000);
           const s = await status(c);
-          samples.push({ t: (Date.now() - start) / 1000, frameMs: s.frameMs, worstMs: s.worstMs, late: s.late, frames: s.frames, cpuMs: s.cpuMs, gpuMs: s.gpuMs, draws: s.draws, drawn: s.drawn, tris: s.tris, places: s.places, reach: s.reach, hour: s.clock.hour, cells: s.cells, eye: s.eye });
+          samples.push({ t: (Date.now() - start) / 1000, frameMs: s.frameMs, worstMs: s.worstMs, late: s.late, frames: s.frames, cpuMs: s.cpuMs, gpuMs: s.gpuMs, draws: s.draws, drawn: s.drawn, tris: s.tris, places: s.places, reach: s.reach, hour: s.clock.hour, cells: s.cells, eye: s.eye, interface: s.interface });
         }
         const last = samples.at(-1)!;
         const mean = (f: (s: any) => number) => samples.reduce((n, s) => n + f(s), 0) / samples.length;
@@ -280,12 +313,56 @@ switch (cmd) {
           cpuMs: mean((s) => s.cpuMs),
           gpuMs: { mean: mean((s) => s.gpuMs), most: Math.max(...samples.map((s) => s.gpuMs)) },
           hours: [begin.clock.hour, last.hour],
+          // The interface's share of a frame, a turn of its guest, and how many turns a second it took.
+          interface: last.interface && {
+            cpuMs: mean((s) => s.interface?.cpuMs ?? 0),
+            turnMs: mean((s) => s.interface?.turnMs ?? 0),
+            worstTurnMs: last.interface.worstTurnMs,
+            scriptMs: mean((s) => s.interface?.scriptMs ?? 0),
+            turnsPerSecond: (last.interface.turns - (begin.interface?.turns ?? 0)) / last.t,
+            lowerDrawsPerSecond: (last.interface.lowerDraws - (begin.interface?.lowerDraws ?? 0)) / last.t,
+            heapBytes: last.interface.heapBytes,
+            linearBytes: last.interface.linearBytes,
+          },
+          linearFree: begin.linearFree,
           control: extra,
         };
         const dir = join(RECEIPTS, `bench-${new Date().toISOString().replace(/[:.]/g, "-")}`);
         mkdirSync(dir, { recursive: true });
         writeFileSync(join(dir, "device.json"), JSON.stringify({ summary, identity: { device: `3ds:${host}`, ...build, new3ds: begin.new3ds }, samples }, null, 1));
         console.log(join(dir, "device.json"));
+        console.log(JSON.stringify(summary, null, 1));
+      });
+    });
+    break;
+  case "trace":
+    // The tour's eye, sampled a few times a second: how fast it moves between two samples. A cut shows as a
+    // sample far above the others.
+    await device(async () => {
+      const seconds = Number(opt("--seconds", "60"));
+      await session(async (c) => {
+        await status(c, `mode=flight tour=1 view=off ${opt("--ctl", "")}`);
+        await Bun.sleep(1500);
+        const start = Date.now();
+        const samples: { t: number; at: number; eye: number[] }[] = [];
+        while (Date.now() - start < seconds * 1000) {
+          const s = await status(c);
+          samples.push({ t: (Date.now() - start) / 1000, at: s.tour.at, eye: s.eye });
+          await Bun.sleep(200);
+        }
+        // Speeds over the tour's own clock, which the samples carry: the wire's delays do not enter.
+        const steps = samples.slice(1).map((s, i) => {
+          const before = samples[i]!, dt = Math.max(s.at - before.at, 1e-3);
+          return { at: s.at, speed: Math.hypot(s.eye[0] - before.eye[0], s.eye[1] - before.eye[1], s.eye[2] - before.eye[2]) / dt, climb: (s.eye[1] - before.eye[1]) / dt };
+        });
+        const sorted = (f: (s: (typeof steps)[number]) => number) => steps.map(f).sort((a, b) => a - b);
+        const speed = sorted((s) => s.speed), climb = sorted((s) => Math.abs(s.climb));
+        const part = (list: number[], share: number) => Number(list[Math.min(list.length - 1, Math.floor(list.length * share))]!.toFixed(1));
+        const summary = { seconds, samples: samples.length, tour: [samples[0]!.at, samples.at(-1)!.at], metresPerSecond: { median: part(speed, 0.5), p95: part(speed, 0.95), most: part(speed, 1) }, climbPerSecond: { median: part(climb, 0.5), p95: part(climb, 0.95), most: part(climb, 1) } };
+        const out = resolve(opt("--out", join(RECEIPTS, `trace-${Date.now()}.json`)));
+        mkdirSync(resolve(out, ".."), { recursive: true });
+        writeFileSync(out, JSON.stringify({ summary, steps }, null, 1));
+        console.log(out);
         console.log(JSON.stringify(summary, null, 1));
       });
     });
@@ -310,6 +387,12 @@ switch (cmd) {
     mkdirSync(card, { recursive: true });
     const frames = Number(opt("--frames", "90"));
     writeFileSync(`${card}/boot.txt`, `title=0 ${opt("--ctl", "")} shot=${frames} exit=${frames + 3}\n`);
+    // What the interface kept in an earlier run, when the run is to start from it.
+    const kept = `${user}/sdmc/3ds/pocket-tokyo/interface.json`;
+    if (opt("--prefs", "")) {
+      mkdirSync(resolve(kept, ".."), { recursive: true });
+      writeFileSync(kept, opt("--prefs", ""));
+    }
     const rom = `${fixture}/${NAME}`;
     cpSync(ARTIFACT, rom);
     const launch = Bun.spawnSync(["open", "-n", "-g", "-a", app, "--env", `HOME=${fixture}`, "--stdout", `${fixture}/console.log`, "--stderr", `${fixture}/console.log`, "--args", rom]);
@@ -338,18 +421,34 @@ switch (cmd) {
         await Bun.sleep(500);
       }
       if (existsSync(`${card}/status.json`)) console.log(readFileSync(`${card}/status.json`, "utf8"));
+      if (existsSync(kept)) console.log(`kept: ${readFileSync(kept, "utf8")}`);
       const bytes = readFileSync(`${card}/shot.bgr`);
       if (bytes.length !== 400 * 240 * 3) throw new Error("the frame is not 400 by 240");
+      // The lower screen stands under the upper one, as on the console. A run without an interface has none.
+      const lower = existsSync(`${card}/shot-low.bgr`) ? readFileSync(`${card}/shot-low.bgr`) : undefined;
+      const height = lower ? 480 : 240;
+      const rgba = new Uint8Array(400 * height * 4);
+      for (let i = 3; i < rgba.length; i += 4) rgba[i] = 255;
       // Columns from the left, each from the bottom up: blue, green, red.
-      const rgba = new Uint8Array(400 * 240 * 4);
-      for (let y = 0; y < 240; y++)
-        for (let x = 0; x < 400; x++) {
-          const s = (x * 240 + 239 - y) * 3;
-          rgba.set([bytes[s + 2]!, bytes[s + 1]!, bytes[s]!, 255], (y * 400 + x) * 4);
-        }
+      const place = (from: Uint8Array, width: number, left: number, top: number) => {
+        for (let y = 0; y < 240; y++)
+          for (let x = 0; x < width; x++) {
+            const s = (x * 240 + 239 - y) * 3;
+            rgba.set([from[s + 2]!, from[s + 1]!, from[s]!, 255], ((top + y) * 400 + left + x) * 4);
+          }
+      };
+      place(bytes, 400, 0, 0);
+      if (lower) place(lower, 320, 40, 240);
       const out = resolve(opt("--out", join(DIR, "emu/frame.png")));
-      writeFileSync(out, encodePng(rgba, 400, 240));
+      mkdirSync(resolve(out, ".."), { recursive: true });
+      writeFileSync(out, encodePng(rgba, 400, height));
       console.log(out);
+      // What the emulator forgave: a read of unmapped memory stops the console.
+      const log = `${user}/log/azahar_log.txt`;
+      if (existsSync(log)) {
+        const unmapped = readFileSync(log, "utf8").split("\n").filter((line) => /unmapped/i.test(line));
+        console.log(unmapped.length ? `emulator log: ${unmapped.length} line(s) name unmapped memory, the first: ${unmapped[0]}` : "emulator log: no read or write of unmapped memory");
+      }
     } finally {
       // Asked to quit first: an emulator that is killed leaves macOS a question for the next run.
       for (const signal of ["SIGTERM", "SIGKILL"] as const) {
@@ -365,6 +464,6 @@ switch (cmd) {
     break;
   }
   default:
-    console.log("usage: bun tools/n3ds.ts <build|install|status|ctl|capture|bench|emu> [--host ADDRESS]");
+    console.log("usage: bun tools/n3ds.ts <build|install|status|ctl|capture|bench|trace|emu> [--host ADDRESS]");
     process.exit(cmd ? 1 : 0);
 }

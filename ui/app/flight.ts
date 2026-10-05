@@ -76,27 +76,42 @@ export interface Flight {
   set(setting: Setting, value: number): void;
 }
 
-/** How many pulses are showing: while one is, a timer is pending. */
-const [pulsing, setPulsing] = createSignal(0);
+/** How many fades are playing: while one is, a timer of the guest's own is pending. */
+const [settling, setSettling] = createSignal(0);
+/** Seconds a fade takes to play, and a turn more. */
+const SETTLE = 0.4;
+/** Each showing of a pulse has an id of its own, which the renderer says back when the showing is over. */
+let wakes = 0;
+const waking = new Map<number, () => void>();
 
-/** True for `seconds` after each `show()`. */
-export function createPulse(seconds: number): [Accessor<boolean>, () => void] {
+/** The guest takes every turn it is offered until what just changed has faded in or out. */
+function settle() {
+  setSettling((count) => count + 1);
+  after(SETTLE, () => setSettling((count) => count - 1));
+}
+
+/**
+ * True for `seconds` after each `show()`. The seconds are counted by the
+ * renderer (`wake`), not by a timer here: a timer of the guest's counts its
+ * turns, so one that is pending makes the device take every turn it offers,
+ * 30 a second, for as long as a hint stands. Between the two fades nothing
+ * is scheduled.
+ */
+export function createPulse(host: Host, seconds: number): [Accessor<boolean>, () => void] {
   const [shown, setShown] = createSignal(false);
-  let cancel: (() => void) | undefined;
-  const hide = () => {
-    if (!untrack(shown)) return;
-    setShown(false);
-    setPulsing((count) => count - 1);
-  };
-  onCleanup(() => {
-    cancel?.();
-    hide();
-  });
+  let id = 0;
+  onCleanup(() => waking.delete(id));
   return [shown, () => {
-    cancel?.();
-    if (!untrack(shown)) setPulsing((count) => count + 1);
+    waking.delete(id);
+    id = ++wakes;
+    waking.set(id, () => {
+      setShown(false);
+      settle();
+    });
+    host.send({ type: "wake", id, seconds });
+    if (untrack(shown)) return;
     setShown(true);
-    cancel = after(seconds, hide);
+    settle();
   }];
 }
 
@@ -187,10 +202,16 @@ export function createFlight(host: Host, touch: boolean): Flight {
   createEffect(on(mode, () => setSheet("menu")));
 
   // The eye changing hands is said once, in the middle of the screen.
-  const [noted, showNote] = createPulse(2.2);
+  const [noted, showNote] = createPulse(host, 2.2);
   createEffect(on(host.tour, () => mode() === "flight" && showNote(), { defer: true }));
   // With no pulse showing nothing is scheduled here: the renderer may skip turns until it has news.
-  createEffect(() => host.ready() && host.send({ type: "idle", on: pulsing() === 0 }));
+  createEffect(() => host.ready() && host.send({ type: "idle", on: settling() === 0 }));
+  // A showing of a pulse is over when the renderer says its id.
+  createEffect(on(host.woke, (id) => {
+    const over = waking.get(id);
+    waking.delete(id);
+    over?.();
+  }, { defer: true }));
 
   // The place is worked out a few times a second from the numbers in flight; its name is a signal.
   let since = 0;
