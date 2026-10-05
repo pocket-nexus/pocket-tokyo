@@ -124,6 +124,10 @@ A model for another landmark reports its members the same way and needs nothing 
 - One pass: the depth buffer has 24 bits. The near plane is at 12 m: the haze is a table of 128 steps over the depth buffer's own values, and a nearer plane leaves the whole city to its first step.
 - Ground: (light × shadow + lamps × night) × picture, in three combiner stages over three textures. Walls: light × tint × facade by day, plus night × what the windows emit.
 - Every texture is in linear memory, and every vertex program writes all three texture coordinates: a unit that stays bound is read at them.
+- **The interface** is the PocketJS guest of `ui/` (the `dual` presentation), compiled in beside the core: PocketJS's 3DS UI core, its citro3d backend and QuickJS. It boots before the pack is read and shows the reading. Its turn runs before `C3D_FrameBegin`, beside the GPU's work on the frame before, and its draws read texture unit 0 alone.
+- **The lower screen** is the interface's second surface, a colour target of its own: the area from above with the eye's mark, the Menu and Tour keys, the day as a bar a stylus turns, and the lists. The upper surface is drawn over the city every frame; the lower one on the frames its list differs from the one it was last drawn from, **8 times a second on the tour**.
+- **A turn of the guest takes 12.3 ms on an Old 3DS** (its script 8.3 ms, layout and the two lists 4.1 ms) and is taken 15 times a second during a flight: 6.2 ms a frame. The tour over the same hours, 90 s, before and with the interface: **0 late frames in 2 717 and in 2 728**; CPU 9.7 ms → 17.1 ms a frame; GPU 16.2 ms → 17.5 ms mean, 21.2 ms → 22.6 ms at most. Opening a list builds its rows in one turn of up to 49 ms.
+- The guest takes 4.5 MB of heap and 5.0 MB of linear memory; 12.3 MB of linear memory stay free. The `.3dsx` is 32.03 MB with the bundle (0.26 MB of script, 0.70 MB of pak) in its ROMFS; the wire installs up to 33.55 MB (32 MiB).
 
 ## Controls
 
