@@ -27,11 +27,10 @@ export default function SingleScreen() {
       <Keep when={host.mode() === "title"} eager width={W} height={H}><Title flight={flight} menu={menu} /></Keep>
       <Keep when={host.mode() === "flight"} eager width={W} height={H}><Instruments flight={flight} /></Keep>
       <Keep when={host.mode() === "menu"} eager width={W} height={H}><Over flight={flight} menu={menu} /></Keep>
-      <Show when={flight.listing()}>
-        <View class="absolute" style={{ insetL: 0, insetB: 0 }}>
-          <Legend width={W} left={flight.mode() === "title" ? `${AREA.name}, ${AREA.district}` : flight.place()} legend={menu.actions.legend()} />
-        </View>
-      </Show>
+      {/* The strip stays built and is shown with a list: a list coming up builds nothing. */}
+      <View class="absolute" style={{ insetL: 0, insetB: 0, display: flight.listing() ? 0 : 1 }}>
+        <Legend width={W} left={flight.mode() === "title" ? `${AREA.name}, ${AREA.district}` : flight.place()} legend={menu.actions.legend()} />
+      </View>
     </View>
   );
 }
@@ -44,19 +43,19 @@ function Title(props: { flight: Flight; menu: Menu }) {
       <View class="absolute" style={{ insetL: 24, insetT: 22 }}><Wordmark large /></View>
       <Text class="absolute text-xs" style={{ insetL: 24, insetT: 88, textColor: DIM }}>A flight over Shiba, around Tokyo Tower.</Text>
       <View class="absolute" style={{ insetR: 16, insetT: 12 }}><Clock host={flight.host} /></View>
-      <Show
-        when={flight.sheet() === "menu"}
-        fallback={
-          <Panel width={W} height={H - FOOTER} panelWidth={320} panelHeight={216}>
-            <View class="flex-col">
-              <Heading text={flight.heading()} width={320} height={28} />
-              <Rows flight={flight} menu={props.menu} width={320} rowHeight={rowHeight(flight)} active={() => flight.mode() === "title"} />
-            </View>
-          </Panel>
-        }
-      >
-        <View class="absolute" style={{ insetL: 10, insetT: 110 }}><Rows flight={flight} menu={props.menu} width={190} rowHeight={26} active={() => flight.mode() === "title"} /></View>
-      </Show>
+      {/* The title's own rows, and the panel a list opened from them comes up in. Both stay built:
+          the rows from the start, the panel from the first time it is shown. */}
+      <View class="absolute" style={{ insetL: 10, insetT: 110, display: flight.sheet() === "menu" ? 0 : 1 }}>
+        <Rows flight={flight} menu={props.menu} width={190} rowHeight={26} active={() => flight.mode() === "title" && flight.sheet() === "menu"} warm={[flight.lists.title]} />
+      </View>
+      <Keep when={flight.sheet() !== "menu"} width={W} height={H - FOOTER}>
+        <Panel width={W} height={H - FOOTER} panelWidth={320} panelHeight={216}>
+          <View class="flex-col">
+            <Heading text={flight.heading()} width={320} height={28} />
+            <Rows flight={flight} menu={props.menu} width={320} rowHeight={rowHeight(flight)} active={() => flight.mode() === "title" && flight.sheet() !== "menu"} />
+          </View>
+        </Panel>
+      </Keep>
     </View>
   );
 }
@@ -93,7 +92,7 @@ function Over(props: { flight: Flight; menu: Menu }) {
       <View class="items-center justify-center" style={{ width: MAP + 24, height: 216 }}><AreaMap host={props.flight.host} width={MAP} /></View>
       <View class="flex-col">
         <Heading text={props.flight.heading()} width={list} height={28} />
-        <Rows flight={props.flight} menu={props.menu} width={list} rowHeight={rowHeight(props.flight)} active={() => props.flight.mode() === "menu"} />
+        <Rows flight={props.flight} menu={props.menu} width={list} rowHeight={rowHeight(props.flight)} active={() => props.flight.mode() === "menu"} warm={[props.flight.lists.menu]} />
       </View>
     </Panel>
   );
