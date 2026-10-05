@@ -5,6 +5,7 @@ import { AREA, SPORT, BARRIER, MATERIAL, BFLAG } from '../shared/tileformat.js';
 import { sampleGrid } from '../shared/terrain.js';
 import { KIND, CAT, WALL, GROUND } from './constants.js';
 import { buildTower } from './tower.js';
+import { reporter } from './landmark.js';
 import { createDraper } from './drape.js';
 import { decalMesh } from './decals.js';
 
@@ -339,7 +340,8 @@ export function buildingMesh(buildings, tx, tz) {
         // the farthest point of the foot is a corner of its square: the faces lie 45 degrees from it
         each((x, y, z) => { const d = Math.hypot(x - ax, z - az); if (y < lo + 4 && d > far) { far = d; angle = Math.atan2(z - az, x - ax) - Math.PI / 4; } });
         wallH = hi - lo;
-        buildTower({ x: ax, z: az, y0: lo, H: hi - lo, R: far / Math.SQRT2, angle }, (p, q, r, s, n, c) => quad(p, q, r, s, n, c, KIND.LATTICE, WALL.SIDING));
+        const shape = { x: ax, z: az, y0: lo, H: hi - lo, R: far / Math.SQRT2, angle };
+        buildTower(shape, (p, q, r, s, n, c) => quad(p, q, r, s, n, c, KIND.LATTICE, WALL.SIDING), reporter({ model: 'lattice tower', ...shape }));
         ends.push(pos.length / 3);
         return;
       }

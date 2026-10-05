@@ -2,7 +2,8 @@
 // the braced shaft above them, the two observation decks and the antenna mast. The data gives where it
 // stands, how it is turned, the width of its foot and its height (PLATEAU's shell is a closed pyramid and
 // is not drawn); the proportions in between are the tower's own.
-// No three.js here: the caller supplies quad(p, q, r, s, outward, colour) (src/world/meshing.js).
+// No three.js here: the caller supplies quad(p, q, r, s, outward, colour) (src/world/meshing.js), and may
+// supply member(record), which is told what the tower is made of (src/world/landmark.js).
 
 const ORANGE = [0.86, 0.075, 0.012], WHITE = [0.8, 0.8, 0.77], GLASS = [0.05, 0.07, 0.09]; // linear RGB
 // Lamps: colours brighter than 1 mark them for the shader, which lights them at night (materials.js).
@@ -23,15 +24,16 @@ function profile(t) {
 const paint = (t) => (t < 0.415 || (t > 0.455 && t < 0.57) || (t > 0.63 && t < 0.73) || t > 0.84 ? ORANGE : WHITE);
 
 // x, z: the axis; y0: the foot; H: height; R: half the width of the foot; angle: direction of one face's width.
-export function buildTower({ x, z, y0, H, R, angle }, quad) {
+export function buildTower({ x, z, y0, H, R, angle }, quad, member = null) {
   const e1 = [Math.cos(angle), Math.sin(angle)], e2 = [-e1[1], e1[0]];
   const P = (u, w, h) => [x + e1[0] * u + e2[0] * w, y0 + h, z + e1[1] * u + e2[1] * w];
   const sub = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
   const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
   const unit = (a) => { const l = Math.hypot(...a) || 1; return [a[0] / l, a[1] / l, a[2] / l]; };
 
-  // a steel member of square section from p to q
-  const beam = (p, q, thick, colour) => {
+  // a steel member of square section from p to q; rank: 0 carries the outline, 1 the frame, 2 is bracing
+  const beam = (p, q, thick, colour, rank = 2) => {
+    member?.({ kind: 'beam', p, q, thick, colour, rank });
     const d = unit(sub(q, p)), a = unit(cross(d, Math.abs(d[1]) > 0.9 ? [1, 0, 0] : [0, 1, 0])), b = cross(d, a), k = thick / 2;
     const at = (o, sa, sb) => [o[0] + (a[0] * sa + b[0] * sb) * k, o[1] + (a[1] * sa + b[1] * sb) * k, o[2] + (a[2] * sa + b[2] * sb) * k];
     for (const [n, c1, c2] of [[a, [1, -1], [1, 1]], [b, [1, 1], [-1, 1]], [[-a[0], -a[1], -a[2]], [-1, 1], [-1, -1]], [[-b[0], -b[1], -b[2]], [-1, -1], [1, -1]]])
@@ -40,6 +42,7 @@ export function buildTower({ x, z, y0, H, R, angle }, quad) {
   // a closed box around the axis: half-width `half`, from h0 to h1
   const box = (h0, h1, half, colour) => {
     const c = (su, sw, h) => P(su * half, sw * half, h), ring = [[-1, -1], [1, -1], [1, 1], [-1, 1]];
+    member?.({ kind: 'box', ring: ring.map(([u, w]) => { const q = c(u, w, 0); return [q[0], q[2]]; }), y0: y0 + h0, y1: y0 + h1, colour });
     ring.forEach(([u, w], i) => {
       const [u2, w2] = ring[(i + 1) % 4], n = sub(P((u + u2) / 2, (w + w2) / 2, 0), P(0, 0, 0));
       quad(c(u, w, h0), c(u2, w2, h0), c(u2, w2, h1), c(u, w, h1), unit(n), colour);
@@ -67,14 +70,14 @@ export function buildTower({ x, z, y0, H, R, angle }, quad) {
     let below = null;
     for (const h of levels) {
       const ring = ringAt(h), n = ring.pts.length, colour = paint(h / H);
-      for (let i = 0; i < n; i++) beam(ring.pts[i], ring.pts[(i + 1) % n], ring.t * 0.6, colour);        // horizontal struts
+      for (let i = 0; i < n; i++) beam(ring.pts[i], ring.pts[(i + 1) % n], ring.t * 0.6, colour, 1);     // horizontal struts
       if (below && below.pts.length === n) for (let i = 0; i < n; i++) {
         const c = paint((h + below.h) / 2 / H), corner = i % ring.div === 0;
-        beam(below.pts[i], ring.pts[i], corner ? ring.t : ring.t * 0.6, c);                                // chords
+        beam(below.pts[i], ring.pts[i], corner ? ring.t : ring.t * 0.6, c, corner ? 0 : 1);                // chords
         beam(below.pts[i], ring.pts[(i + 1) % n], ring.t * 0.45, c);                                       // cross-bracing
         beam(below.pts[(i + 1) % n], ring.pts[i], ring.t * 0.45, c);
       } else if (below) { // the panel count changes here: chords at the corners only
-        for (let k = 0; k < 4; k++) beam(below.pts[k * below.div], ring.pts[k * ring.div], ring.t, colour);
+        for (let k = 0; k < 4; k++) beam(below.pts[k * below.div], ring.pts[k * ring.div], ring.t, colour, 0);
       }
       below = { ...ring, h };
     }
@@ -95,7 +98,7 @@ export function buildTower({ x, z, y0, H, R, angle }, quad) {
     const N = 12, hOf = (f) => archFoot + (archTop - archFoot) * (1 - f * f);
     for (let i = 0; i < N; i++) {
       const f0 = -1 + (2 * i) / N, f1 = -1 + (2 * (i + 1)) / N, a = at(f0, hOf(f0)), b = at(f1, hOf(f1));
-      beam(a, b, 0.9, ORANGE);
+      beam(a, b, 0.9, ORANGE, 0);
       if (i > 0) beam(a, top(f0), 0.45, ORANGE);                      // spandrel struts up to the ring
       beam(i % 2 ? a : b, top(i % 2 ? f1 : f0), 0.4, ORANGE);        // and their bracing
     }
@@ -114,6 +117,7 @@ export function buildTower({ x, z, y0, H, R, angle }, quad) {
   // ---- lights: warm bulbs up the four corners, red obstruction beacons at the top and on the decks
   const lamp = (u, w, h, size, colour) => {
     const c = P(u, w, h), k = size / 2, v = (sx, sy, sz) => [c[0] + sx * k, c[1] + sy * k, c[2] + sz * k];
+    member?.({ kind: 'lamp', at: c, size, colour });
     quad(v(-1, 1, -1), v(1, 1, -1), v(1, 1, 1), v(-1, 1, 1), [0, 1, 0], colour);
     quad(v(-1, -1, -1), v(1, -1, -1), v(1, -1, 1), v(-1, -1, 1), [0, -1, 0], colour);
     quad(v(-1, -1, -1), v(1, -1, -1), v(1, 1, -1), v(-1, 1, -1), [0, 0, -1], colour);

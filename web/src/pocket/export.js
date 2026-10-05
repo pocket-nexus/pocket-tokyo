@@ -10,6 +10,7 @@ import { sampleGrid } from '../shared/terrain.js';
 import { makeSurface, makeCover } from '../shared/decks.js';
 import { makeProjection } from '../shared/geo.js';
 import { buildTile } from '../world/meshing.js';
+import { landmarks } from '../world/landmark.js';
 import { KIND, CAT, WALL } from '../world/constants.js';
 import { createMaterials, shared } from '../world/materials.js';
 import { loadTextures } from '../world/textures.js';
@@ -168,6 +169,8 @@ if (!ONLY || ONLY === 'tiles') {
   const wanted = params.get('tiles')?.split(',');
   const list = manifest.tiles.filter((tl) => !wanted || wanted.includes(`${tl.x}_${tl.z}`));
   let done = 0;
+  // The models of landmarks report their members while the tiles are built.
+  landmarks.sink = [];
   for (const tl of list) {
     const tile = decodeTile(await (await fetch(`${base}/${tl.file}`)).arrayBuffer());
     const mesh = buildTile(tile, grid, size, surface);
@@ -260,6 +263,26 @@ if (!ONLY || ONLY === 'tiles') {
     done++;
     if (done % 10 === 0 || done === list.length) log(`tiles ${done}/${list.length}`);
     document.title = `export tiles ${done}/${list.length}`;
+  }
+
+  // -- the landmarks, each as what it is made of: beams (p, q, thickness, colour, rank), boxes (four corners
+  //    x and z, y0, y1, colour) and lamps (place, size, colour)
+  {
+    const beams = [], boxes = [], lamps = [], records = [];
+    for (const l of landmarks.sink) {
+      const first = [beams.length / 11, boxes.length / 13, lamps.length / 7];
+      for (const m of l.members) {
+        if (m.kind === 'beam') beams.push(...m.p, ...m.q, m.thick, ...m.colour, m.rank);
+        else if (m.kind === 'box') boxes.push(...m.ring.flat(), m.y0, m.y1, ...m.colour);
+        else if (m.kind === 'lamp') lamps.push(...m.at, m.size, ...m.colour);
+      }
+      records.push({ model: l.model, x: l.x, z: l.z, y0: l.y0, height: l.H, radius: l.R, angle: l.angle, beams: [first[0], beams.length / 11 - first[0]], boxes: [first[1], boxes.length / 13 - first[1]], lamps: [first[2], lamps.length / 7 - first[2]] });
+    }
+    const marks = new Bundle({ landmarks: records });
+    marks.add('beams', new Float32Array(beams)).add('boxes', new Float32Array(boxes)).add('lamps', new Float32Array(lamps));
+    await put('landmarks.cir', marks.blob());
+    landmarks.sink = null;
+    log(`landmarks: ${records.length}`);
   }
 
   // -- the model library: what stands at a prop, by kind and variant
