@@ -153,7 +153,42 @@ unsafe fn sync_pack(live: bool, font: *mut g::vita2d_pgf, dev: &mut dev::Host, f
             }
         }
     }
-    Ok(if std::fs::File::open(paths::PACK_CARD).is_ok() { paths::PACK_CARD } else { paths::PACK_APP })
+    // A development build reads the copy on the card; a package reads its own pack, whatever an earlier
+    // development build left on the card.
+    let first = if live { [paths::PACK_CARD, paths::PACK_APP] } else { [paths::PACK_APP, paths::PACK_CARD] };
+    Ok(if std::fs::File::open(first[0]).is_ok() { first[0] } else { first[1] })
+}
+
+/// Copies a file the computer has put in the share's `outbox` to this app's folder on the memory card (a
+/// package, for VitaShell to install), and leaves `<name>.done` beside the original: what was copied, or why not.
+unsafe fn fetch(name: &str, font: *mut g::vita2d_pgf, dev: &mut dev::Host, frame: &mut u32) {
+    let (from, to) = (format!("{}/outbox/{name}", paths::HOST), format!("{}/{name}", paths::DATA));
+    let mut copy = || -> Result<usize, String> {
+        let _ = std::fs::create_dir_all(paths::DATA);
+        let mut src = std::fs::File::open(&from).map_err(|e| format!("{from}: {e}"))?;
+        let temp = format!("{to}.part");
+        let mut dst = std::fs::File::create(&temp).map_err(|e| format!("{temp}: {e}"))?;
+        let mut chunk = vec![0u8; 1024 * 1024];
+        let (mut done, t) = (0usize, Instant::now());
+        loop {
+            let n = src.read(&mut chunk).map_err(|e| format!("{from}: {e}"))?;
+            if n == 0 {
+                break;
+            }
+            dst.write_all(&chunk[..n]).map_err(|e| format!("{temp}: {e}"))?;
+            done += n;
+            loading(font, dev, frame, &[format!("Copying {name} to the memory card"), format!("{:.0} MB at {:.1} MB/s", done as f32 / 1e6, done as f32 / 1e6 / t.elapsed().as_secs_f32().max(0.001))]);
+        }
+        drop(dst);
+        let _ = std::fs::remove_file(&to);
+        std::fs::rename(&temp, &to).map_err(|e| format!("{to}: {e}"))?;
+        Ok(done)
+    };
+    let said = match copy() {
+        Ok(bytes) => format!("{bytes} bytes at {to}"),
+        Err(e) => format!("failed: {e}"),
+    };
+    let _ = hostfs::write(&format!("{from}.done"), said.as_bytes());
 }
 
 /// Remote control: `host0:tokyo/control.json`, polled off the render thread.
@@ -440,6 +475,9 @@ fn main() {
             let pressed = buttons & !prev_buttons;
             prev_buttons = buttons;
             while let Ok(v) = control.try_recv() {
+                if let Some(name) = v["fetch"].as_str().filter(|n| !n.contains('/') && !n.contains("..")) {
+                    fetch(name, font, &mut dev, &mut frame_no);
+                }
                 apply_control(&v, &mut set, &mut cam, &mut tour_at);
             }
             let vcount = sceDisplayGetVcount();
