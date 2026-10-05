@@ -1,0 +1,25 @@
+[package]
+name = "pocket-tokyo-psp"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Pocket Tokyo on PSP: the city through the GE's fixed pipeline at 30 frames per second"
+
+# cargo-psp builds a lone crate.
+[workspace]
+
+[dependencies]
+psp = { git = "https://github.com/pocket-nexus/rust-psp.git", rev = "2cbaf8c9bc72569c76240a1d9743de10731e5f6b", features = ["abort-only", "external-global-alloc"] }
+# The Allegrex FPU has no doubles: single-precision kernels and its own square root.
+tokyo-sim = { path = "../crates/tokyo-sim", default-features = false, features = ["hw-sqrt", "single-float"] }
+tokyo-pack = { path = "../crates/tokyo-pack", default-features = false }
+pocket3d-title = { path = "../vendor/pocketjs/engine/pocket3d/crates/pocket3d-title" }
+libm = "0.2"
+
+# Everything at opt-level 3: built for size, a call to a system function with more than four arguments passes
+# the fifth one wrong on this toolchain.
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
