@@ -3,7 +3,7 @@
 // the checked-out commit by the commands a developer runs (tools/tokyo.ts,
 // psp.ts, n3ds.ts, ipod.ts).
 //
-//   bun tools/release.ts [--targets vita,psp,3ds,ipod-touch] [--out dist/release]
+//   bun tools/release.ts [--targets vita,psp,3ds,ipod-touch,android] [--out dist/release]
 //                        [--vita-gxp DIR] [--no-build] [--upload]
 //
 // For each target it cooks the profile's pack from the exported area
@@ -14,6 +14,7 @@
 //   psp         pocket-tokyo-<version>-psp.zip    PSP/GAME/PocketTokyo/, for the root of a Memory Stick
 //   3ds         pocket-tokyo-<version>.3dsx       the pack and the interface in its ROMFS
 //   ipod-touch  pocket-tokyo-<version>-ipod.ipa   Payload/PocketTokyo.app
+//   android     pocket-tokyo-<version>.apk        the app for Android 4.3 and later on ARMv7, the pack inside, signed
 //
 // and release.json beside them: the commit, the version (ui/pocket.json),
 // each file's size and SHA-256, the inputs and the toolchains. A target that
@@ -58,8 +59,8 @@ interface Package {
   sha256: string;
 }
 
-/** Pocket Studio's ids for the devices this repository builds for. It also takes `android`; nothing here builds one. */
-const TARGETS = ["vita", "psp", "3ds", "ipod-touch"] as const;
+/** Pocket Studio's ids for the devices this repository builds for. */
+const TARGETS = ["vita", "psp", "3ds", "ipod-touch", "android"] as const;
 type Target = (typeof TARGETS)[number];
 
 /** What each target cooks and what its package is called. */
@@ -68,6 +69,7 @@ const BUILDS: Record<Target, { profile: string; filename: (version: string) => s
   psp: { profile: "psp30", filename: (v) => `${NAME}-${v}-psp.zip`, build: psp },
   "3ds": { profile: "n3ds30", filename: (v) => `${NAME}-${v}.3dsx`, build: n3ds },
   "ipod-touch": { profile: "ipod60", filename: (v) => `${NAME}-${v}-ipod.ipa`, build: ipod },
+  android: { profile: "redmi1s60", filename: (v) => `${NAME}-${v}.apk`, build: android },
 };
 
 const sha256 = (bytes: Uint8Array | string) => new Bun.CryptoHasher("sha256").update(bytes).digest("hex");
@@ -311,6 +313,38 @@ async function ipod(log: string, output: string): Promise<void> {
   writeZip(output, tree(join(ROOT, ".pocket-build/ipod/Payload"), "Payload"));
 }
 
+/**
+ * The certificate the Android package is signed under, by its SHA-256 (CN=PocketJS Redmi 1S). Its key is a file
+ * outside Git: `keystore` in tools/android.ts names where it is looked for, and the tool makes a new key when it
+ * finds none. A phone installs a package over an installed one only under the same certificate, so a package
+ * signed by another key is refused here.
+ */
+const ANDROID_SIGNER = "30d86254a83f6714806d38ae4e7d9961ddcb7d09afd95d5bb748c3d09082fc6b";
+let signer: string | undefined;
+
+/** The signed package with the pack inside (`tools/android.ts apk`), as the tool leaves it. */
+async function android(log: string, output: string): Promise<void> {
+  await run(log, ["bun", "tools/android.ts", "apk", "--area", AREA]);
+  const built = join(ROOT, "dist/android/PocketTokyo.apk");
+  signer = apkSigner(built);
+  if (signer !== ANDROID_SIGNER) {
+    throw new Error(
+      `the Android package is signed under ${signer}, and a release is signed under ${ANDROID_SIGNER}: the release key is not on this computer (tools/android.ts names where it looks, and made a key of its own)`,
+    );
+  }
+  cpSync(built, output);
+}
+
+/** The SHA-256 of the certificate an APK's v1 signature carries, as lower-case hex. */
+function apkSigner(apk: string): string {
+  const signature = Bun.spawnSync(["unzip", "-p", apk, "META-INF/*.RSA"]).stdout;
+  const certificate = Bun.spawnSync(["openssl", "pkcs7", "-inform", "DER", "-print_certs"], { stdin: signature }).stdout;
+  const said = Bun.spawnSync(["openssl", "x509", "-noout", "-fingerprint", "-sha256"], { stdin: certificate }).stdout.toString();
+  const digest = /Fingerprint=([0-9A-Fa-f:]+)/.exec(said)?.[1];
+  if (!digest) throw new Error(`${apk} carries no certificate this tool can read`);
+  return digest.replaceAll(":", "").toLowerCase();
+}
+
 /** What Pocket Studio accepts as a package: its name, its first bytes and its size. */
 function accept(path: string): void {
   const name = basename(path);
@@ -345,6 +379,11 @@ function named(tool: string): string | null {
   return / run (\S+) cargo /.exec(readFileSync(join(ROOT, tool), "utf8"))?.[1] ?? null;
 }
 
+/** What a tool's source names with `pattern`: its pinned versions are constants there, not exports. */
+function inTool(tool: string, pattern: RegExp): string | null {
+  return pattern.exec(readFileSync(join(ROOT, tool), "utf8"))?.[1] ?? null;
+}
+
 function toolchains() {
   const rustc = (toolchain: string | null) => (toolchain ? `${toolchain}: ${line(["rustup", "run", toolchain, "rustc", "-V"]) ?? "not installed"}` : null);
   const pinned = (file: string) => JSON.parse(readFileSync(join(POCKETJS, "tools/cli", file), "utf8"));
@@ -359,6 +398,12 @@ function toolchains() {
       psp: rustc(pinned("psp-toolchain.json").rust.toolchain),
       "3ds": rustc(named("tools/n3ds.ts")),
       "ipod-touch": rustc(pinned("iphone4s-toolchain.json").compiler.rustToolchain),
+      android: rustc(inTool("tools/android.ts", /rust: "([^"]+)"/)),
+    },
+    android: {
+      ndk: inTool("tools/android.ts", /ndk: "([^"]+)"/),
+      buildTools: inTool("tools/android.ts", /buildTools: "([^"]+)"/),
+      java: Bun.spawnSync(["java", "-version"]).stderr.toString().split("\n")[0] || null,
     },
     vitasdk: {
       gcc: line([`${vitasdk}/bin/arm-vita-eabi-gcc`, "--version"]),
@@ -405,7 +450,7 @@ const asked = option("--targets", TARGETS.join(",")).split(",").filter(Boolean);
 const unknown = asked.filter((t) => !(TARGETS as readonly string[]).includes(t));
 if (unknown.length || argv.includes("--help")) {
   if (unknown.length) console.error(`release: no build for ${unknown.join(", ")}: the targets are ${TARGETS.join(", ")}`);
-  console.log("usage: bun tools/release.ts [--targets vita,psp,3ds,ipod-touch] [--out dist/release] [--vita-gxp DIR] [--no-build] [--upload]");
+  console.log("usage: bun tools/release.ts [--targets vita,psp,3ds,ipod-touch,android] [--out dist/release] [--vita-gxp DIR] [--no-build] [--upload]");
   process.exit(unknown.length ? 1 : 0);
 }
 const targets = TARGETS.filter((t) => asked.includes(t));
@@ -467,7 +512,7 @@ if (argv.includes("--no-build")) {
         dirty,
         packages,
         failed: failed.map(({ target, error }) => ({ target, error: error.split("\n")[0] })),
-        inputs: { cityIr: ir, packs, vitaPrograms: programs ?? null, buildIds },
+        inputs: { cityIr: ir, packs, vitaPrograms: programs ?? null, buildIds, androidSigner: signer ?? null },
         toolchains: toolchains(),
       },
       null,

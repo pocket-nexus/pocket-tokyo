@@ -26,7 +26,7 @@
  * The phone is the one device `adb` lists (or ANDROID_SERIAL).
  */
 import { createHash, randomBytes } from "node:crypto";
-import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { ensureQuickJsCheckout, quickJsCheckout } from "../vendor/pocketjs/tools/native-source.ts";
@@ -267,7 +267,11 @@ async function packageApk() {
   // `-0 pack`: the pack is stored as it is, so the app reads it in place through a file descriptor.
   // `--no-crunch`: the icons go in as PocketJS's files are, byte for byte.
   run([join(buildTools, "aapt"), "package", "-f", "--no-crunch", "-0", "pack", "-M", manifest, "-S", res, "-A", assets, "-I", androidJar, "-F", unsigned]);
-  run(["zip", "-q", "-r", unsigned, "lib"], staging);
+  // aapt dates its entries 1980-01-01. `zip` dates an entry by its file and adds the file's access time; apksigner
+  // dates its own entries by the last one it is given. The libraries take aapt's date and `-X` leaves the access
+  // times out, so two packages of the same contents are the same bytes.
+  for (const library of [built.engine, built.loader]) utimesSync(library, new Date(1980, 0, 1), new Date(1980, 0, 1));
+  run(["zip", "-q", "-X", "-r", unsigned, "lib"], staging);
   run([join(buildTools, "zipalign"), "-f", "4", unsigned, aligned]);
   mkdirSync(join(root, "dist/android"), { recursive: true });
   cpSync(aligned, apk);
