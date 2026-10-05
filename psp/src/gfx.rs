@@ -7,7 +7,9 @@
 //!    own ground, with a short frustum and three quarters of the 16-bit depth
 //!    buffer;
 //! 3. the far pass: the mid and the far level, with a frustum from where they
-//!    start to the horizon and the other quarter.
+//!    start to the horizon and the other quarter;
+//! 4. the interface, as PocketJS's GE backend draws what the guest last laid
+//!    out.
 //!
 //! A landmark is drawn in whichever of the two passes its distance puts it,
 //! or in both, from its own model for that distance.
@@ -38,11 +40,11 @@ use tokyo_sim::flight::Flight;
 use tokyo_sim::mat::{self, Mat4};
 use tokyo_sim::math::*;
 use tokyo_sim::sky;
-use tokyo_sim::text;
 use tokyo_sim::view::{self, Item};
 
+use crate::interface::Ui;
 use crate::shade::{self, Ground};
-use crate::store;
+use crate::store::{self, Kept};
 use crate::stream::Streamer;
 
 const LIST_WORDS: usize = 98_304;
@@ -50,28 +52,10 @@ static mut LIST: Align16<[u32; LIST_WORDS]> = Align16([0; LIST_WORDS]);
 /// One white texel, for what is painted: the texture stage doubles a colour only when there is a texture.
 static mut WHITE: Align16<[u16; 64]> = Align16([0xffff; 64]);
 
-/// The letters: indices into `INK`, drawn once at the start.
-static mut LETTERS: Align16<[u8; text::ATLAS_W * text::ATLAS_H]> = Align16([0; text::ATLAS_W * text::ATLAS_H]);
-/// Nothing, and white.
-static mut INK: Align16<[u32; 16]> = Align16([0, 0xffff_ffff, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
-/// Letters a frame may draw, each twice: its shadow, then itself.
-const TEXT_MOST: usize = 160;
-
-/// A corner of a letter's quad, in the screen's own coordinates.
-#[derive(Clone, Copy, Default)]
-#[repr(C)]
-struct TextVertex {
-    u: u16,
-    v: u16,
-    color: u32,
-    x: i16,
-    y: i16,
-    z: i16,
-    pad: u16,
-}
-
 /// One frame buffer: 512 × 272 texels of 16 bits. The colour and depth buffers are all this size.
 pub const FB_BYTES: usize = 512 * 272 * 2;
+/// Which of the two frame buffers the list in flight draws into.
+pub static mut DRAW_BUFFER: usize = 0;
 /// The far pass's share of the depth buffer.
 const DEPTH_SPLIT: i32 = 16384;
 /// Day of the year the sun follows (early October).
@@ -99,9 +83,6 @@ fn vtype_top() -> VertexType {
 }
 fn vtype_wall() -> VertexType {
     VertexType::TEXTURE_16BIT | VertexType::COLOR_5650 | VertexType::VERTEX_16BIT | VertexType::INDEX_16BIT | VertexType::TRANSFORM_3D
-}
-fn vtype_text() -> VertexType {
-    VertexType::TEXTURE_16BIT | VertexType::COLOR_8888 | VertexType::VERTEX_16BIT | VertexType::TRANSFORM_2D
 }
 fn vtype_sky() -> VertexType {
     VertexType::COLOR_8888 | VertexType::VERTEX_32BITF | VertexType::INDEX_16BIT | VertexType::TRANSFORM_3D
@@ -148,36 +129,34 @@ struct Last {
 
 pub struct Gfx {
     pub city: City,
-    regions: Vec<Region>,
-    blocks: Vec<Block>,
-    pub cells: Vec<Cell>,
-    batches: Vec<Batch>,
-    spans: Vec<u32>,
-    vertices: [Vec<u8>; 3],
-    idx: Vec<u16>,
-    pictures: Vec<HandPicture>,
-    htex: Vec<u8>,
+    regions: Kept<Region>,
+    blocks: Kept<Block>,
+    pub cells: Kept<Cell>,
+    batches: Kept<Batch>,
+    spans: Kept<u32>,
+    vertices: [Kept<u8>; 3],
+    idx: Kept<u16>,
+    pictures: Kept<HandPicture>,
+    htex: Kept<u8>,
     /// Per picture of `pictures`: its palette as the hour mixes it, and the step that mix holds.
     mixed: Vec<u32>,
     held: Vec<u32>,
     _shade: shade::Shade,
     /// Where the eye is, and the frame's counts, between choosing a frame's draws and writing its list.
     chosen: (f32, u32),
-    pub heights: Vec<u16>,
-    landmarks: Vec<Landmark>,
+    pub heights: Kept<u16>,
+    landmarks: Kept<Landmark>,
     /// Where the far pass starts and the near pass ends, metres from the eye.
     split: (f32, f32),
     lists: [Vec<Item>; KINDS],
     sky_vb: Vec<SkyVertex>,
     sky_dirs: Vec<V3>,
     sky_ib: Vec<u16>,
-    text_vb: Vec<TextVertex>,
-    /// Corners written this frame.
-    text_at: usize,
     pub stats: Stats,
     pub resident_bytes: usize,
     /// Development switches (`option=` on the control line): 1 no culling, 2 the other winding, 4 one light for
-    /// every sector, 8 no fog, 16 no lighting stage, 32 no texture, 64 nearest texel, 128 no clipping.
+    /// every sector, 8 no fog, 16 no lighting stage, 32 no texture, 64 nearest texel, 128 no clipping, 256 no
+    /// interface in the list, 512 no turn for the interface.
     pub option: u32,
 }
 
@@ -236,32 +215,101 @@ unsafe fn bind(palette: *const u32, data: *const u8, width: u32, height: u32, le
     }
 }
 
+/// Starts the GE: two 16-bit frame buffers, the depth buffer, and the state every frame assumes.
+pub unsafe fn init() {
+    sceGuInit();
+    sceGuStart(GuContextType::Direct, ptr::addr_of_mut!(LIST.0) as *mut c_void);
+    // 16-bit colour with ordered dither: half the memory traffic of 32-bit per pixel written.
+    sceGuDrawBuffer(DisplayPixelFormat::Psm5650, ptr::null_mut(), 512);
+    sceGuDispBuffer(480, 272, FB_BYTES as *mut c_void, 512);
+    sceGuDepthBuffer((FB_BYTES * 2) as *mut c_void, 512);
+    sceGuOffset(2048 - 240, 2048 - 136);
+    sceGuViewport(2048, 2048, 480, 272);
+    sceGuDepthRange(65535, 0);
+    sceGuDepthFunc(DepthFunc::GreaterOrEqual);
+    sceGuScissor(0, 0, 480, 272);
+    sceGuEnable(GuState::ScissorTest);
+    sceGuEnable(GuState::ClipPlanes);
+    sceGuFrontFace(FrontFaceDirection::CounterClockwise);
+    sceGuShadeModel(ShadingModel::Smooth);
+    let row = |x, y, z, w| ScePspIVector4 { x, y, z, w };
+    sceGuSetDither(&ScePspIMatrix4 { x: row(-4, 0, -3, 1), y: row(2, -2, 3, -1), z: row(-3, 1, -4, 0), w: row(3, -1, 2, -2) });
+    sceGuEnable(GuState::Dither);
+    sceGuBlendFunc(BlendOp::Add, BlendFactor::SrcAlpha, BlendFactor::OneMinusSrcAlpha, 0, 0);
+    // Light: no lamps of the GE's own; the ambient colour of a draw times the vertex's colour.
+    sceGuLightMode(LightMode::SingleColor);
+    sceGuColorMaterial(LightComponent::AMBIENT);
+    sceGuModelColor(0, 0x00ff_ffff, 0, 0);
+    sceGuMaterial(LightComponent::AMBIENT, 0xffff_ffff);
+    sceGuClearColor(BACKDROP);
+    sceGuClear(ClearBuffer::COLOR_BUFFER_BIT);
+    sceGuFinish();
+    sceGuSync(GuSyncMode::Finish, GuSyncBehavior::Wait);
+    sceDisplayWaitVblankStart();
+    sceGuDisplay(true);
+}
+
+/// Presents the frame just drawn; the next list draws into the other buffer.
+pub unsafe fn swap() {
+    sceGuSwapBuffers();
+    DRAW_BUFFER ^= 1;
+}
+
+/// A frame out of video memory, 480 × 272 texels of 16 bits: host I/O cannot take a video memory
+/// address. `buffer` is `DRAW_BUFFER` for the list just drawn and not yet presented.
+pub unsafe fn pixels(buffer: usize) -> Vec<u8> {
+    let vram = sceGeEdramGetAddr().add(buffer * FB_BYTES);
+    let mut out = alloc::vec![0u8; 480 * 272 * 2];
+    for y in 0..272 {
+        ptr::copy_nonoverlapping(vram.add(y * 512 * 2), out.as_mut_ptr().add(y * 480 * 2), 480 * 2);
+    }
+    out
+}
+
+/// Behind the interface while there is no city.
+const BACKDROP: u32 = 0xff11_0c09;
+
+/// A frame of the interface alone, shown at once: the pack is loading, or it could not be.
+pub unsafe fn interlude(ui: &Ui) {
+    sceGuStart(GuContextType::Direct, ptr::addr_of_mut!(LIST.0) as *mut c_void);
+    sceGuClearColor(BACKDROP);
+    sceGuClear(ClearBuffer::COLOR_BUFFER_BIT);
+    sceGuDisable(GuState::DepthTest);
+    sceGuDisable(GuState::CullFace);
+    sceGuTexWrap(GuTexWrapMode::Clamp, GuTexWrapMode::Clamp);
+    ui.draw();
+    sceGuFinish();
+    sceGuSync(GuSyncMode::Finish, GuSyncBehavior::Wait);
+    pocketjs_psp::ge::reset_pool();
+    sceDisplayWaitVblankStart();
+    swap();
+}
+
 impl Gfx {
-    /// Reads what stays in memory and sets the GE up.
-    pub unsafe fn load(file: &store::PackFile, progress: &mut dyn FnMut(&str)) -> Result<Gfx, &'static str> {
-        progress("tables");
-        let city: City = *file.records::<City>(pack::CITY)?.first().ok_or("city section")?;
+    /// Reads what stays in memory. `init` has set the GE up, or will.
+    pub unsafe fn load(file: &store::PackFile, city: City, progress: &mut dyn FnMut(&str)) -> Result<Gfx, &'static str> {
+        progress("Reading the tables");
         if city.region_blocks != 1 || city.flags & (pack::flag::FACED | pack::flag::STREAMED) != (pack::flag::FACED | pack::flag::STREAMED) || city.cells > 8 {
             return Err("the pack is not a PSP pack");
         }
-        let regions: Vec<Region> = file.records(pack::REGN)?;
-        let blocks: Vec<Block> = file.records(pack::BLCK)?;
-        let cells: Vec<Cell> = file.records(pack::CELL)?;
-        let batches: Vec<Batch> = file.records(pack::BTCH)?;
-        let spans: Vec<u32> = file.records(pack::SPAN)?;
-        progress("geometry");
-        let vertices: [Vec<u8>; 3] = [file.records(pack::VTOP)?, file.records(pack::VWAL)?, file.records(pack::VSOL)?];
-        let idx: Vec<u16> = file.records(pack::IDX0)?;
-        let heights: Vec<u16> = file.records(pack::HMAP)?;
-        progress("pictures");
-        let pictures: Vec<HandPicture> = file.records(pack::HPIC)?;
-        let mut htex: Vec<u8> = file.records(pack::HTEX)?;
+        let regions: Kept<Region> = file.resident(pack::REGN)?;
+        let blocks: Kept<Block> = file.resident(pack::BLCK)?;
+        let cells: Kept<Cell> = file.resident(pack::CELL)?;
+        let batches: Kept<Batch> = file.resident(pack::BTCH)?;
+        let spans: Kept<u32> = file.resident(pack::SPAN)?;
+        progress("Reading the geometry");
+        let vertices: [Kept<u8>; 3] = [file.resident(pack::VTOP)?, file.resident(pack::VWAL)?, file.resident(pack::VSOL)?];
+        let idx: Kept<u16> = file.resident(pack::IDX0)?;
+        let heights: Kept<u16> = file.resident(pack::HMAP)?;
+        progress("Reading the pictures");
+        let pictures: Kept<HandPicture> = file.resident(pack::HPIC)?;
+        let mut htex: Kept<u8> = file.resident(pack::HTEX)?;
         if pictures.len() < blocks.len() + 1 || htex.as_ptr() as usize & 15 != 0 {
             return Err("the pack's pictures");
         }
         let mixed = alloc::vec![0u32; pictures.len() * 256];
         let held = alloc::vec![u32::MAX; pictures.len()];
-        progress("shadows");
+        progress("Casting the shadows");
         let grounds: Vec<Ground> = (0..blocks.len())
             .map(|b| {
                 let p = pictures[b];
@@ -269,7 +317,7 @@ impl Gfx {
             })
             .collect();
         let shade = shade::start(&heights, &city, grounds)?;
-        let landmarks: Vec<Landmark> = file.records(pack::LAND)?;
+        let landmarks: Kept<Landmark> = file.resident(pack::LAND)?;
 
         // The sky's dome: unit directions, and the triangles between its rings.
         let mut sky_dirs = Vec::with_capacity(SKY_VERTS);
@@ -293,38 +341,8 @@ impl Gfx {
         for k in 0..n {
             sky_ib.extend_from_slice(&[top + k, top + n, top + (k + 1) % n]);
         }
-        text::atlas(&mut *ptr::addr_of_mut!(LETTERS.0));
         let resident_bytes = vertices.iter().map(|v| v.len()).sum::<usize>() + idx.len() * 2 + htex.len() + heights.len() * 2 + mixed.len() * 4 + (batches.len() + cells.len()) * 48 + spans.len() * 4;
         sceKernelDcacheWritebackAll();
-
-        sceGuInit();
-        sceGuStart(GuContextType::Direct, ptr::addr_of_mut!(LIST.0) as *mut c_void);
-        // 16-bit colour with ordered dither: half the memory traffic of 32-bit per pixel written.
-        sceGuDrawBuffer(DisplayPixelFormat::Psm5650, ptr::null_mut(), 512);
-        sceGuDispBuffer(480, 272, FB_BYTES as *mut c_void, 512);
-        sceGuDepthBuffer((FB_BYTES * 2) as *mut c_void, 512);
-        sceGuOffset(2048 - 240, 2048 - 136);
-        sceGuViewport(2048, 2048, 480, 272);
-        sceGuDepthRange(65535, 0);
-        sceGuDepthFunc(DepthFunc::GreaterOrEqual);
-        sceGuScissor(0, 0, 480, 272);
-        sceGuEnable(GuState::ScissorTest);
-        sceGuEnable(GuState::ClipPlanes);
-        sceGuFrontFace(FrontFaceDirection::CounterClockwise);
-        sceGuShadeModel(ShadingModel::Smooth);
-        let row = |x, y, z, w| ScePspIVector4 { x, y, z, w };
-        sceGuSetDither(&ScePspIMatrix4 { x: row(-4, 0, -3, 1), y: row(2, -2, 3, -1), z: row(-3, 1, -4, 0), w: row(3, -1, 2, -2) });
-        sceGuEnable(GuState::Dither);
-        sceGuBlendFunc(BlendOp::Add, BlendFactor::SrcAlpha, BlendFactor::OneMinusSrcAlpha, 0, 0);
-        // Light: no lamps of the GE's own; the ambient colour of a draw times the vertex's colour.
-        sceGuLightMode(LightMode::SingleColor);
-        sceGuColorMaterial(LightComponent::AMBIENT);
-        sceGuModelColor(0, 0x00ff_ffff, 0, 0);
-        sceGuMaterial(LightComponent::AMBIENT, 0xffff_ffff);
-        sceGuFinish();
-        sceGuSync(GuSyncMode::Finish, GuSyncBehavior::Wait);
-        sceDisplayWaitVblankStart();
-        sceGuDisplay(true);
 
         Ok(Gfx {
             city,
@@ -348,8 +366,6 @@ impl Gfx {
             sky_vb: alloc::vec![SkyVertex::default(); SKY_VERTS],
             sky_dirs,
             sky_ib,
-            text_vb: alloc::vec![TextVertex::default(); TEXT_MOST * 4],
-            text_at: 0,
             stats: Stats::default(),
             resident_bytes,
             option: 0,
@@ -500,48 +516,6 @@ impl Gfx {
         }
     }
 
-    /// A line of text for this frame, its top left corner at `(x, y)`, each dot `scale` pixels.
-    pub fn text(&mut self, x: i32, y: i32, scale: i32, color: u32, line: &str) {
-        for (pass, tint) in [(1, 0xc000_0000u32), (0, color)] {
-            for (k, c) in line.bytes().enumerate() {
-                if c == b' ' || self.text_at + 2 > self.text_vb.len() {
-                    continue;
-                }
-                let (u, v) = text::glyph(c);
-                let (px, py) = (x + (k * text::ADVANCE) as i32 * scale + pass * scale.max(1), y + pass * scale.max(1));
-                self.text_vb[self.text_at] = TextVertex { u: u as u16, v: v as u16, color: tint, x: px as i16, y: py as i16, z: 0, pad: 0 };
-                self.text_vb[self.text_at + 1] = TextVertex { u: (u + 5) as u16, v: (v + 7) as u16, color: tint, x: (px + 5 * scale) as i16, y: (py + 7 * scale) as i16, z: 0, pad: 0 };
-                self.text_at += 2;
-            }
-        }
-    }
-
-    /// The frame's text, over everything.
-    unsafe fn letters(&mut self) {
-        if self.text_at == 0 {
-            return;
-        }
-        sceKernelDcacheWritebackRange(self.text_vb.as_ptr() as *const c_void, (self.text_at * core::mem::size_of::<TextVertex>()) as u32);
-        sceGuDisable(GuState::DepthTest);
-        sceGuDisable(GuState::CullFace);
-        sceGuEnable(GuState::Blend);
-        sceGuEnable(GuState::Texture2D);
-        sceGuTexFunc(TextureEffect::Modulate, TextureColorComponent::Rgba);
-        sceGuTexFilter(TextureFilter::Nearest, TextureFilter::Nearest);
-        sceGuTexWrap(GuTexWrapMode::Clamp, GuTexWrapMode::Clamp);
-        sceGuTexMapMode(TextureMapMode::TextureCoords, 0, 0);
-        sceGuTexScale(1.0, 1.0);
-        sceGuTexOffset(0.0, 0.0);
-        sceGuClutMode(ClutPixelFormat::Psm8888, 0, 0xff, 0);
-        sceGuClutLoad(2, ptr::addr_of!(INK.0) as *const c_void);
-        sceGuTexMode(TexturePixelFormat::PsmT8, 0, 0, 0);
-        sceGuTexImage(MipmapLevel::None, text::ATLAS_W as i32, text::ATLAS_H as i32, text::ATLAS_W as i32, ptr::addr_of!(LETTERS.0) as *const c_void);
-        sceGuDrawArray(GuPrimitive::Sprites, vtype_text(), self.text_at as i32, ptr::null(), self.text_vb.as_ptr() as *const c_void);
-        sceGuDisable(GuState::Blend);
-        self.stats.draws += 1;
-        self.text_at = 0;
-    }
-
     /// Chooses the frame's draws. The GE may still be drawing the frame before.
     pub unsafe fn choose(&mut self, flight: &Flight, streamer: &mut Streamer) {
         self.stats = Stats::default();
@@ -562,7 +536,7 @@ impl Gfx {
     }
 
     /// Writes and starts the list of the frame chosen. No list is in flight when this is called.
-    pub unsafe fn draw(&mut self, flight: &Flight, streamer: &mut Streamer) {
+    pub unsafe fn draw(&mut self, flight: &Flight, streamer: &mut Streamer, ui: &Ui) {
         let t1 = sceKernelGetSystemTimeLow();
         let (eye, look, fov) = flight.eye();
         let aspect = 480.0 / 272.0;
@@ -673,7 +647,14 @@ impl Gfx {
         sceGuDisable(GuState::Lighting);
         sceGuDisable(GuState::Fog);
         sceGuDisable(GuState::Fragment2X);
-        self.letters();
+        // The interface: PocketJS's GE backend sets blending and texturing for itself and leaves both
+        // off; it draws in screen coordinates, over everything.
+        if self.option & 256 == 0 {
+            sceGuDisable(GuState::DepthTest);
+            sceGuDisable(GuState::CullFace);
+            sceGuTexWrap(GuTexWrapMode::Clamp, GuTexWrapMode::Clamp);
+            ui.draw();
+        }
         self.stats.words = (sceGuFinish() / 4) as u32;
         self.stats.list = sceKernelGetSystemTimeLow().wrapping_sub(t1);
     }

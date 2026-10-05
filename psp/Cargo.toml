@@ -3,13 +3,18 @@ name = "pocket-tokyo-psp"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
-description = "Pocket Tokyo on PSP: the city through the GE's fixed pipeline at 30 frames per second"
+description = "Pocket Tokyo on PSP: the city through the GE's fixed pipeline at 30 frames per second, and the interface's guest over it"
 
 # cargo-psp builds a lone crate.
 [workspace]
 
 [dependencies]
-psp = { git = "https://github.com/pocket-nexus/rust-psp.git", rev = "2cbaf8c9bc72569c76240a1d9743de10731e5f6b", features = ["abort-only", "external-global-alloc"] }
+# The interface (ui/) runs on PocketJS's PSP host library: QuickJS, the UI core, its GE backend and
+# the one-block arena that serves them and Rust (it is the program's global allocator).
+psp = { git = "https://github.com/pocket-nexus/rust-psp.git", rev = "2cbaf8c9bc72569c76240a1d9743de10731e5f6b", features = ["external-c-heap", "abort-only", "external-global-alloc"] }
+libquickjs-sys = { git = "https://github.com/pocket-nexus/quickjs-rs.git", rev = "ba5bdd0dc013518768e76cd9e05cd30ed53dd35b" }
+pocketjs-psp = { path = "../vendor/pocketjs/hosts/psp" }
+tokyo-interface = { path = "../crates/tokyo-interface", default-features = false, features = ["guest"] }
 # The Allegrex FPU has no doubles: single-precision kernels and its own square root.
 tokyo-sim = { path = "../crates/tokyo-sim", default-features = false, features = ["hw-sqrt", "single-float"] }
 tokyo-pack = { path = "../crates/tokyo-pack", default-features = false }

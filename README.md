@@ -7,7 +7,7 @@ This repository is private until its owner says otherwise. Compiled city data ke
 | | Screen | Renderer | Measured |
 | --- | --- | --- | --- |
 | PS Vita | 960 × 544, 4× MSAA, shadows that follow the clock, night glow | GXM, programs compiled on the device | 150 s of the tour from 15:36 to 20:04, with the traffic: 9 010 frames, **0 late**, worst frame 16.9 ms, 90 000 to 198 000 triangles a frame (mean 162 000), 225 draws |
-| PSP | 480 × 272, shadows that follow the clock | GE, fixed function, one display list a frame | 150 s of the tour (PSPLINK, 333 MHz): 4 500 frames, **0 late**, worst frame 35.5 ms, 22 400 to 43 900 triangles a frame (mean 37 500), 1 253 draws |
+| PSP | 480 × 272, shadows that follow the clock | GE, fixed function, one display list a frame | 150 s of the tour with the interface over it (PSPLINK, 333 MHz): 4 500 frames, **0 late**, worst frame 40.2 ms, 22 700 to 42 000 triangles a frame (mean 37 500), 1 252 draws |
 | Nintendo 3DS | 400 × 240 on the upper screen, shadows that follow the clock; the clock and the frame in numbers on the lower one | PICA200: four vertex programs, three combiner stages | Old 3DS, one view of the build before the landmark models: 30 frames a second, 44 000 triangles, 289 draws, 10.7 ms of CPU, 18.6 ms of GPU. The tour is not benched on the console yet |
 
 The city is modelled once as Three.js content that runs in a browser, and a compiler lowers it to what one console draws:
@@ -118,6 +118,10 @@ A model for another landmark reports its members the same way and needs nothing 
 - **A list costs 1.5 ms plus 0.63 ms per 1 000 triangles**, with or without lighting, fog, texture or clipping. At 30 frames a second that is 45 000 triangles; the budget is 42 000.
 - Two ranges of the 16-bit depth buffer: the cells near the eye, then the mid and far levels. A landmark is drawn in the range its distance puts it in, or in both.
 - Reading a cell (126 KiB at most) takes 8 ms over USB; a sweep of the shadows takes 320 ms and writing them into the pictures 1.7 s, both in the time the frame thread waits.
+- **The interface** (`ui/`, the `single` presentation) runs on PocketJS's PSP host library: QuickJS, the UI core and its GE backend, with PocketJS's one-block arena as the program's allocator. The city's buffers come at their exact size from the 2 MB the arena leaves the kernel, then from the arena's uncarved tail (`psp/src/mem.rs`). The guest takes 5.0 MB once the title is up and 5.7 MB once every list has been opened, so the package asks for the larger user memory of the 2000 and later models (`MEMSIZE=1`: 53.7 MB free at the start, 21.7 MB of the arena in use after loading). With 24 MB the guest is not started: nothing is drawn over the city, and START hands the eye to the tour and takes it back.
+- **A turn of the guest runs while the GE draws the frame before.** The frame's own work on this CPU is 9 ms (choosing the draws 4.4 ms, writing the list 4.4 ms) against 28 ms of the GE's, so a whole turn fits in the wait: its script 6.4 ms, then layout and the list of what it shows 2.9 ms. During a flight the guest takes 10 turns a second, one per refresh of the numbers, 3.4 ms of this CPU a frame. Its draw is the last pass of the display list and costs the GE 0.9 ms during a flight.
+- **A list over the city is pixels the GE blends.** The title's cost it 1.9 ms and the menu's 6.7 ms, and the city gives that up in triangles: the governor's budget is 39 000 behind the title and 31 000 behind the menu. 60 s of each on the console: 0 late frames.
+- **A list coming up or leaving costs one frame.** The turn that does it takes about 50 ms (script 36 ms, layout 16 ms). Every list stays built once it has been shown (`Rows` in `ui/app/parts.tsx`); the first time, the hours take 0.27 s to build and the settings 0.12 s. A collection of the guest's heap stops this CPU for 60 to 80 ms; it waits for a list to be up.
 
 ## The frame on the 3DS
 
@@ -129,7 +133,7 @@ A model for another landmark reports its members the same way and needs nothing 
 
 Vita: left stick flies, right stick looks, L and R go down and up, ✕ flies faster. Left and right on the pad turn the clock; up and down set how fast it runs. START returns to the tour; SELECT shows the frame counters.
 
-PSP: the stick flies ahead and turns, △ and ✕ look up and down, L and R go down and up, □ flies faster; the pad, START and SELECT as on the Vita. 3DS: the Circle Pad flies ahead and turns, X and B look up and down, L and R go down and up, Y flies faster; L + R + START leaves.
+PSP: the stick flies ahead and turns, △ and ✕ look up and down, L and R go down and up, □ flies faster; left and right on the pad turn the clock, SELECT hands the eye to the tour and takes it back, START opens the menu. 3DS: the Circle Pad flies ahead and turns, X and B look up and down, L and R go down and up, Y flies faster; L + R + START leaves.
 
 On the handhelds the eye keeps 30 m above what stands under it and around it. On the tour it starts to rise two seconds before a tower and comes down after it.
 
