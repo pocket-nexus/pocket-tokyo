@@ -1,0 +1,24 @@
+// Painted geometry: structures, street furniture, the lattice tower.
+
+void main(
+    float3 aPosition,
+    float2 aAo,
+    float3 aNormal,
+    float4 aColor,
+    uniform float4x4 uMvp,
+    uniform float4 uMap,
+    uniform float4 uFrame[4],
+    out float4 oPosition : POSITION,
+    out float2 oMap : TEXCOORD0,
+    out float2 oHeight : TEXCOORD1,
+    out float4 oLight : COLOR0,
+    out float4 oTint : COLOR1)
+{
+    oPosition = mul(uMvp, float4(aPosition, 1.0));
+    oMap = aPosition.xz * uMap.xy + uMap.zw;
+    // (alpha 1 marks a lamp: y is how far it shines by its own colour, once the lights are on)
+    oHeight = float2(aPosition.y, aColor.a * uFrame[1].w * 1.6);
+    // Thin members are seen from both sides: light them by the side that faces the light.
+    oLight = float4((uFrame[1].rgb + uFrame[2].rgb * aNormal.y) * aAo.x, abs(dot(aNormal, uFrame[0].xyz)) * 0.8 + 0.2);
+    oTint = float4(aColor.rgb, haze_of(oPosition.w, uFrame));
+}

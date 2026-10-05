@@ -1,0 +1,14 @@
+[workspace]
+resolver = "2"
+members = ["crates/tokyo-pack", "crates/tokyo-sim", "crates/tokyo-cook"]
+# The device apps build with their own toolchains and lockfiles.
+exclude = ["vita", "psp", "n3ds", "vendor", "web"]
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+
+[profile.dev]
+opt-level = 1

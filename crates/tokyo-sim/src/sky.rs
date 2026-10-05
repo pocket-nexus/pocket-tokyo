@@ -1,0 +1,163 @@
+//! The clock and what it does to the light: where the sun and the moon
+//! stand over Tokyo at an hour of the day, and the colours of the sun, the
+//! sky and the haze that follow from it.
+
+use crate::math::*;
+
+/// Tokyo Tower: 35.6586° N.
+const LATITUDE: f32 = 0.622_36;
+
+/// Direction to the sun at `hour` (0..24, local solar time) on day `day` of the year (0 = 1 January).
+/// The frame is the city's: x east, y up, z south.
+pub fn sun_direction(hour: f32, day: f32) -> V3 {
+    let decl = -0.409_28 * cos(TAU * (day + 10.0) / 365.0);
+    let h = (hour - 12.0) * (PI / 12.0);
+    let (sl, cl) = (sin(LATITUDE), cos(LATITUDE));
+    let (sd, cd) = (sin(decl), cos(decl));
+    // East, north and up from the hour angle.
+    let east = -cd * sin(h);
+    let north = cl * sd - sl * cd * cos(h);
+    let up = sl * sd + cl * cd * cos(h);
+    v3(east, up, -north)
+}
+
+/// The light of an hour, colours in the display's own encoding (sRGB values, used as they are).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Light {
+    /// Towards the light that casts shadows: the sun by day, the moon at night.
+    pub dir: V3,
+    pub sun: [f32; 3],
+    /// Light from the sky on a face that looks up, and on one that looks down.
+    pub sky: [f32; 3],
+    pub ground: [f32; 3],
+    /// The haze towards the horizon and overhead.
+    pub horizon: [f32; 3],
+    pub zenith: [f32; 3],
+    /// 0 by day, 1 when the city's lights are fully on.
+    pub night: f32,
+    /// 0 by day, 1 when the sky is dark.
+    pub dark: f32,
+    /// Where the sun itself is, for the sky.
+    pub sun_dir: V3,
+}
+
+fn mix3(a: [f32; 3], b: [f32; 3], t: f32) -> [f32; 3] {
+    [lerp(a[0], b[0], t), lerp(a[1], b[1], t), lerp(a[2], b[2], t)]
+}
+
+/// Keys along the sun's height (sine of its elevation): colours of the sun, the sky light, the horizon and the zenith.
+const KEYS: [(f32, [f32; 3], [f32; 3], [f32; 3], [f32; 3]); 6] = [
+    (-0.30, [0.10, 0.13, 0.22], [0.10, 0.12, 0.20], [0.10, 0.09, 0.12], [0.015, 0.02, 0.05]),
+    (-0.10, [0.12, 0.14, 0.24], [0.16, 0.17, 0.27], [0.36, 0.24, 0.26], [0.05, 0.07, 0.17]),
+    (0.00, [0.95, 0.42, 0.16], [0.34, 0.32, 0.40], [0.95, 0.55, 0.30], [0.16, 0.22, 0.42]),
+    (0.10, [1.00, 0.68, 0.40], [0.42, 0.44, 0.52], [0.92, 0.74, 0.58], [0.22, 0.36, 0.62]),
+    (0.30, [1.00, 0.90, 0.76], [0.46, 0.52, 0.62], [0.76, 0.82, 0.90], [0.20, 0.40, 0.72]),
+    (1.00, [1.00, 0.96, 0.88], [0.48, 0.55, 0.66], [0.72, 0.80, 0.90], [0.17, 0.36, 0.70]),
+];
+
+pub fn light(hour: f32, day: f32) -> Light {
+    let sun_dir = sun_direction(hour, day);
+    let h = sun_dir.y;
+    let mut i = 0;
+    while i + 2 < KEYS.len() && h > KEYS[i + 1].0 {
+        i += 1;
+    }
+    let (a, b) = (&KEYS[i], &KEYS[i + 1]);
+    let t = saturate((h - a.0) / (b.0 - a.0));
+    let night = smoothstep(0.12, -0.08, h);
+    let dark = smoothstep(0.02, -0.22, h);
+    // Below the horizon the sun gives way to the moon, which stands opposite it and higher than it is low.
+    let moon = v3(-sun_dir.x, max(-sun_dir.y, 0.35), -sun_dir.z).norm();
+    let by_sun = smoothstep(-0.06, 0.02, h);
+    let dir = if by_sun > 0.0 { v3(sun_dir.x, max(sun_dir.y, 0.03), sun_dir.z).norm() } else { moon };
+    let fade = if by_sun > 0.0 { by_sun } else { smoothstep(-0.06, -0.16, h) * 0.9 };
+    let sun = mix3(a.1, b.1, t);
+    let sky = mix3(a.2, b.2, t);
+    Light {
+        dir,
+        sun: [sun[0] * fade, sun[1] * fade, sun[2] * fade],
+        sky,
+        ground: [sky[0] * 0.55, sky[1] * 0.52, sky[2] * 0.5],
+        horizon: mix3(a.3, b.3, t),
+        zenith: mix3(a.4, b.4, t),
+        night,
+        dark,
+        sun_dir,
+    }
+}
+
+/// The light of an hour on a machine that lights a group of faces with one colour: on a wall that looks to each
+/// sector of the compass (`tokyo_pack::SECTORS`), and last on what looks up. By night the pictures carry their
+/// own light, and every colour goes to 1.
+pub fn by_sector(l: &Light) -> [[f32; 3]; tokyo_pack::SECTORS + 1] {
+    let mut out = [[0.0f32; 3]; tokyo_pack::SECTORS + 1];
+    for (k, o) in out.iter_mut().enumerate() {
+        // A wall sees half the sky and half the ground; what looks up sees the sky.
+        let (facing, up) = if k < tokyo_pack::SECTORS { (max(crate::view::sector_normal(k).dot(l.dir), 0.0), 0.5) } else { (max(l.dir.y, 0.0), 1.0) };
+        for c in 0..3 {
+            let day = l.sun[c] * facing + lerp(l.ground[c], l.sky[c], up);
+            o[c] = lerp(day, 1.0, l.night);
+        }
+    }
+    out
+}
+
+/// The sky as a dome of triangles around the eye, coloured at its vertices: rings of `DOME_SEGMENTS` vertices
+/// at the heights of `DOME_RINGS` (sines), from below the horizon up, and one vertex overhead.
+pub const DOME_SEGMENTS: usize = 16;
+pub const DOME_RINGS: [f32; 8] = [-0.34, -0.10, 0.0, 0.09, 0.21, 0.41, 0.67, 0.91];
+pub const DOME_VERTS: usize = DOME_SEGMENTS * DOME_RINGS.len() + 1;
+pub const DOME_INDICES: usize = (DOME_RINGS.len() - 1) * DOME_SEGMENTS * 6 + DOME_SEGMENTS * 3;
+
+/// The direction of a vertex of the dome.
+pub fn dome_dir(i: usize) -> V3 {
+    if i + 1 >= DOME_VERTS {
+        return V3::UP;
+    }
+    let y = DOME_RINGS[i / DOME_SEGMENTS];
+    let (r, a) = (sqrt(1.0 - y * y), (i % DOME_SEGMENTS) as f32 * TAU / DOME_SEGMENTS as f32);
+    v3(cos(a) * r, y, sin(a) * r)
+}
+
+/// The dome's triangles, seen from inside.
+pub fn dome_indices(out: &mut [u16]) {
+    let n = DOME_SEGMENTS as u16;
+    let mut at = 0;
+    let mut put = |t: [u16; 3]| {
+        out[at..at + 3].copy_from_slice(&t);
+        at += 3;
+    };
+    for ring in 0..DOME_RINGS.len() as u16 - 1 {
+        for k in 0..n {
+            let (a, b, c, d) = (ring * n + k, ring * n + (k + 1) % n, (ring + 1) * n + k, (ring + 1) * n + (k + 1) % n);
+            put([a, c, b]);
+            put([b, c, d]);
+        }
+    }
+    let top = (DOME_RINGS.len() as u16 - 1) * n;
+    for k in 0..n {
+        put([top + k, top + n, top + (k + 1) % n]);
+    }
+}
+
+/// The colour of the sky in a direction: haze at the horizon, the zenith's colour overhead, a glow around the
+/// sun, and below the horizon the land beyond the city under the same haze.
+pub fn dome_color(l: &Light, d: V3) -> [f32; 3] {
+    let glow = saturate(l.sun_dir.y * 6.0 + 0.6);
+    let around = [(0.6 + l.sun[0]) * glow, (0.45 + l.sun[1]) * glow, (0.3 + l.sun[2]) * glow];
+    let up = sqrt(saturate(d.y));
+    let down = saturate(-d.y * 3.0);
+    let s = saturate(d.dot(l.sun_dir));
+    let s8 = {
+        let s2 = s * s;
+        let s4 = s2 * s2;
+        s4 * s4
+    };
+    let s64 = {
+        let a = s8 * s8;
+        let b = a * a;
+        b * b
+    };
+    let sun = (s8 * 0.18 + s64 * 0.35) * (1.0 - down);
+    [0, 1, 2].map(|k| lerp(l.horizon[k], l.zenith[k], up) * (1.0 - 0.3 * down) + around[k] * sun)
+}

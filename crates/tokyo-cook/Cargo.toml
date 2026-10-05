@@ -1,0 +1,18 @@
+[package]
+name = "tokyo-cook"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "City compiler of Pocket Tokyo: lowers CityIR to a device pack of tiles, levels of detail and textures"
+
+[dependencies]
+tokyo-pack = { path = "../tokyo-pack" }
+tokyo-sim = { path = "../tokyo-sim" }
+rayon = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+texpresso = { version = "2", features = ["rayon"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+earcutr = "0.4"
+meshopt = "0.6"

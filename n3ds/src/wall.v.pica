@@ -1,0 +1,46 @@
+; Walls, and the cards that stand in for lattice towers. A wall has no normal:
+; the sector of the compass it faces picks its light from seventeen.
+.fvec mvp[4]
+; x: 1 / 32767 (u), y: -FACADE_V / 32767 (v, counted down the picture), z: 1 / 255, w: 1
+.fvec scale
+; rgb: the light on a wall of each sector, halved
+.fvec lights[17]
+.constf consts(0.0, 1.0, 0.0, 1.0)
+.in inpos v0
+; x: what the wall sees of the sky, y: its sector
+.in inao v1
+; rgb: the wall's own colour
+.in inclr v2
+.in intex v3
+.out outpos position
+.out outclr color
+.out outtc0 texcoord0
+.out outtc1 texcoord1
+; (the third unit stays bound from the ground's draws: it is read here, at a place that exists)
+.out outtc2 texcoord2
+.entry main
+.proc main
+    mov r0.xyz, inpos.xyz
+    mov r0.w, consts.w
+    dp4 outpos.x, mvp[0], r0
+    dp4 outpos.y, mvp[1], r0
+    dp4 outpos.z, mvp[2], r0
+    dp4 outpos.w, mvp[3], r0
+    mul r1.xy, scale.xy, intex.xy
+    add r1.y, consts.y, r1.y
+    ; (a source's swizzle is applied before the write mask picks components: one component at a time)
+    mov r1.z, consts.x
+    mov r1.w, consts.w
+    mov outtc0, r1
+    mov outtc1, r1
+    mov outtc2, r1
+    mova a0.x, inao.y
+    mov r2, lights[a0.x]
+    mul r3, scale.zzzz, inclr
+    mul r3.xyz, r2.xyz, r3.xyz
+    mul r4, scale.zzzz, inao.xxxx
+    mul r3.xyz, r4.xyz, r3.xyz
+    mov r3.w, consts.w
+    mov outclr, r3
+    end
+.end

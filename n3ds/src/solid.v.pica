@@ -1,0 +1,37 @@
+; Painted geometry: a colour, lit by the sector its face looks to.
+.fvec mvp[4]
+; z: 1 / 255
+.fvec scale
+.fvec lights[17]
+.constf consts(0.0, 1.0, 0.0, 1.0)
+.in inpos v0
+.in inao v1
+.in inclr v2
+.out outpos position
+.out outclr color
+; (a texture unit that stays bound is read at these: every program writes all three)
+.out outtc0 texcoord0
+.out outtc1 texcoord1
+.out outtc2 texcoord2
+.entry main
+.proc main
+    mov r0.xyz, inpos.xyz
+    mov r0.w, consts.w
+    dp4 outpos.x, mvp[0], r0
+    dp4 outpos.y, mvp[1], r0
+    dp4 outpos.z, mvp[2], r0
+    dp4 outpos.w, mvp[3], r0
+    mova a0.x, inao.y
+    mov r2, lights[a0.x]
+    mul r3, scale.zzzz, inclr
+    mul r3.xyz, r2.xyz, r3.xyz
+    mul r4, scale.zzzz, inao.xxxx
+    mul r3.xyz, r4.xyz, r3.xyz
+    mov r3.w, consts.w
+    mov outclr, r3
+    mov r9, consts.xxxw
+    mov outtc0, r9
+    mov outtc1, r9
+    mov outtc2, r9
+    end
+.end

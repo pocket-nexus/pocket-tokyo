@@ -1,0 +1,28 @@
+; The sky: a dome around the eye, coloured at its vertices.
+.fvec mvp[4]
+.constf consts(0.0, 1.0, 0.0039215686, 1.0)
+.in inpos v0
+.in inclr v1
+.out outpos position
+.out outclr color
+; (a texture unit that stays bound is read at these: every program writes all three)
+.out outtc0 texcoord0
+.out outtc1 texcoord1
+.out outtc2 texcoord2
+.entry main
+.proc main
+    mov r0.xyz, inpos.xyz
+    mov r0.w, consts.w
+    dp4 outpos.x, mvp[0], r0
+    dp4 outpos.y, mvp[1], r0
+    dp4 outpos.z, mvp[2], r0
+    dp4 outpos.w, mvp[3], r0
+    mul r1, consts.zzzz, inclr
+    mov r1.w, consts.w
+    mov outclr, r1
+    mov r9, consts.xxxw
+    mov outtc0, r9
+    mov outtc1, r9
+    mov outtc2, r9
+    end
+.end

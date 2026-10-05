@@ -1,0 +1,18 @@
+uniform sampler2D uGround;
+uniform sampler2D uShadow;
+uniform sampler2D uLamp;
+// [0] rgb: the haze; a: how far the street lamps are on. [1] rgb: the sun
+uniform float4 uLook[2];
+
+half4 main(float2 vUv : TEXCOORD0, float2 vMap : TEXCOORD1, float vHeight : TEXCOORD2, half4 vLight : COLOR0, half4 vHaze : COLOR1) : COLOR
+{
+    half lit = (half)saturate((vHeight - tex2D(uShadow, vMap).r) * SHADOW_K + 1.0);
+    half3 light = (vLight.rgb + (half3)uLook[1].rgb * (vLight.a * lit)) * (half)LIGHT_SCALE;
+#ifdef NIGHT
+    // Lamp light lies on the ground as it was drawn into the height grid's twin (at half strength).
+    light += (half3)tex2D(uLamp, vMap).rgb * (half)uLook[0].a;
+#endif
+    half3 c = (half3)tex2D(uGround, vUv).rgb * light;
+    c = lerp(c, (half3)uLook[0].rgb, vHaze.a);
+    return half4(c, 1.0);
+}

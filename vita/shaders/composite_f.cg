@@ -1,0 +1,8 @@
+// The scene's own target, copied to the display.
+
+uniform sampler2D uScene;
+
+half4 main(float2 vUv0 : TEXCOORD0) : COLOR
+{
+    return half4((half3)tex2D(uScene, vUv0).rgb, 1.0);
+}

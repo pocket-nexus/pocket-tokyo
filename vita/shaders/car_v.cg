@@ -1,0 +1,22 @@
+// Cars: boxes built each frame in the world's own coordinates. uMap takes world x, z to the height grid.
+
+void main(
+    float3 aPosition,
+    float3 aNormal,
+    float4 aColor,
+    uniform float4x4 uMvp,
+    uniform float4 uMap,
+    uniform float4 uFrame[4],
+    out float4 oPosition : POSITION,
+    out float2 oMap : TEXCOORD0,
+    out float2 oHeight : TEXCOORD1,
+    out float4 oLight : COLOR0,
+    out float4 oTint : COLOR1)
+{
+    oPosition = mul(uMvp, float4(aPosition, 1.0));
+    oMap = aPosition.xz * uMap.xy + uMap.zw;
+    // (alpha 1 marks a lamp: y is how far it shines by its own colour, once the lights are on)
+    oHeight = float2((aPosition.y - Y0) / Y_SPAN, aColor.a * uFrame[1].w * 2.0);
+    oLight = float4(uFrame[1].rgb + uFrame[2].rgb * aNormal.y, max(dot(aNormal, uFrame[0].xyz), 0.0));
+    oTint = float4(aColor.rgb, haze_of(oPosition.w, uFrame));
+}
