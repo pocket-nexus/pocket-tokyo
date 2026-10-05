@@ -9,7 +9,7 @@ The packages for each device are on [Pocket Studio](https://studio.pocket.nexus)
 | PS Vita | 960 × 544, 4× MSAA, shadows that follow the clock, night glow | GXM, programs compiled on the device | 150 s of the tour from 15:36 to 20:04, with the traffic and the interface: 9 010 frames, **0 late**, worst frame 17.6 ms, 86 800 to 200 200 triangles a frame (mean 158 200), 222 draws |
 | PSP | 480 × 272, shadows that follow the clock | GE, fixed function, one display list a frame | 150 s from the title into the tour, with the interface over it (PSPLINK, 333 MHz): 4 500 frames, **5 late** (3 of them in the first 5 s, while the tour's first cells are read), worst frame 50 ms, 22 800 to 42 100 triangles a frame (mean 37 600), 1 255 draws |
 | Nintendo 3DS | 400 × 240 on the upper screen, shadows that follow the clock; the area from above and the day as a bar on the lower one | PICA200: four vertex programs, three combiner stages | Old 3DS, 90 s of the tour with the interface on both screens: 2 728 frames, **0 late**, 21 400 to 53 600 triangles a frame (mean 40 000), 276 draws, 17.1 ms of CPU and 17.5 ms of GPU a frame |
-| iPod touch 4 | 480 × 320, 4× MSAA, shadows that follow the clock, the tower's lamps by night | OpenGL ES 2 on the SGX535: seven programs | 150 s of the tour with the interface over it, from 15:35 to 20:05 (iOS 6.1.6): 8 965 frames, **37 late** (0.41 %), worst frame 39.8 ms, 16 600 to 27 500 triangles a frame (mean 22 200), 205 draws |
+| iPod touch 4 | 480 × 320, 4× MSAA, shadows that follow the clock, the tower floodlit and its lamps by night | OpenGL ES 2 on the SGX535: seven programs | 150 s of the tour with the interface over it, from 15:35 to 20:05 (iOS 6.1.6): 8 965 frames, **37 late** (0.41 %), worst frame 39.8 ms, 16 600 to 27 500 triangles a frame (mean 22 200), 205 draws |
 
 The city is modelled once as Three.js content that runs in a browser, and a compiler lowers it to what one console draws:
 
@@ -122,7 +122,9 @@ A landmark is a building the reference builds member by member from a model of i
 
 A model for another landmark reports its members the same way and needs nothing else in the compiler or on a device. The Vita draws the reference's own triangles of the tower.
 
-A profile that gives `landmarks.lamps` a size per level also gets the model's lamps: each is three squares crossed, in the lamp's colour with alpha 255, which a vertex program reads as "shines by itself once the night has come". The iPod touch's profile does (118 lamps on the tower: 4 096, 2 440 and 1 272 triangles); a machine that lights a group of faces with one colour has no use for them.
+**A member's alpha is how far it shines by its own colour once the night has come.** A landmark's steel and decks stand in floodlights: alpha 191, 0.75 of their colour, which the vertex program of the 3DS and of the iPod touch adds to the light of the hour (a wall keeps 0.16 to 0.26 of its colour by night, and the tower stood that dark among lit windows). The Vita's pack gives its tower the same 0.75. The PSP draws every painted face at its full colour by night and reads no alpha: its pack is the same bytes.
+
+A profile that gives `landmarks.lamps` a size per level also gets the model's lamps: each is three squares crossed, in the lamp's colour with alpha 255, lit whole. The iPod touch's profile does (118 lamps on the tower: 4 096, 2 440 and 1 272 triangles); a machine that lights a group of faces with one colour has no use for them.
 
 ## The frame on the PSP
 
@@ -138,7 +140,7 @@ A profile that gives `landmarks.lamps` a size per level also gets the model's la
 ## The frame on the 3DS
 
 - One pass: the depth buffer has 24 bits. The near plane is at 12 m: the haze is a table of 128 steps over the depth buffer's own values, and a nearer plane leaves the whole city to its first step.
-- Ground: (light × shadow + lamps × night) × picture, in three combiner stages over three textures. Walls: light × tint × facade by day, plus night × what the windows emit.
+- Ground: (light × shadow + lamps × night) × picture, in three combiner stages over three textures. Walls: light × tint × facade by day, plus night × what the windows emit. Painted geometry: (light + night × the vertex's alpha) × its colour, in the vertex program.
 - Every texture is in linear memory, and every vertex program writes all three texture coordinates: a unit that stays bound is read at them.
 - **The interface** is the PocketJS guest of `ui/` (the `dual` presentation), compiled in beside the core: PocketJS's 3DS UI core, its citro3d backend and QuickJS. It boots before the pack is read and shows the reading. Its turn runs before `C3D_FrameBegin`, beside the GPU's work on the frame before, and its draws read texture unit 0 alone.
 - **The lower screen** is the interface's second surface, a colour target of its own: the area from above with the eye's mark, the Menu and Tour keys, the day as a bar a stylus turns, and the lists. The upper surface is drawn over the city every frame; the lower one on the frames its list differs from the one it was last drawn from, **8 times a second on the tour**.

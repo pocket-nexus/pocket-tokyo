@@ -55,7 +55,7 @@ pub struct SolidTri {
     pub p: [P3; 3],
     /// Per corner: a face of a structure is flat, a tree's crown round.
     pub n: [P3; 3],
-    /// sRGB; alpha 255 marks a lamp.
+    /// sRGB; alpha: how far the face shines by its own colour at night (255 a lamp, less under floodlights).
     pub color: [u8; 4],
 }
 
