@@ -1,0 +1,53 @@
+# Pocket Tokyo drawn with wgpu: in a browser tab over WebGPU (wasm32), and on
+# the machine that builds it (Metal), where a frame can be written to a file.
+#
+# The city, the flight and what a frame draws are the handheld core's
+# (core/, the source of n3ds/core); kernel/ is everything that is not this
+# game's: the GPU device and its targets, 16-bit pictures, ranges of a file.
+#
+#   bun tools/wgpu.ts build | serve | shot | check     (from the repository root)
+
+[package]
+name = "tokyo-wgpu"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Pocket Tokyo's wgpu renderer: the iPod touch's passes, in a browser tab and on the build machine"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[[bin]]
+name = "tokyo-shot"
+path = "src/bin/shot.rs"
+
+[dependencies]
+tokyo-core = { path = "core" }
+tokyo-pack = { path = "../crates/tokyo-pack", default-features = false }
+tokyo-sim = { path = "../crates/tokyo-sim", default-features = false }
+tokyo-interface = { path = "../crates/tokyo-interface", default-features = false }
+pocket-web-wgpu = { path = "kernel" }
+bytemuck = { version = "1", features = ["derive"] }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+# The command line tool that writes the JavaScript side must be this version (tools/wgpu.ts checks).
+wasm-bindgen = "=0.2.126"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+web-sys = { version = "0.3", features = ["HtmlCanvasElement", "console"] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+png = "0.17"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+
+[profile.dev]
+opt-level = 1
+
+[workspace]
+members = ["core", "kernel"]
+resolver = "2"

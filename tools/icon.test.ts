@@ -86,3 +86,10 @@ test("iPod touch: the bundle gets PocketJS's two files, and SpringBoard adds no 
   expect(tool).toContain(`cpSync(POCKET3D_ICON.ios2x, join(bundle, "Icon@2x.png"))`);
   expect(tool).toContain(`UIPrerenderedIcon: "<true/>"`);
 });
+
+test("the browser tab: the site gets PocketJS's file as its icon", () => {
+  const tool = read("tools/wgpu.ts");
+  expect(tool).toContain("tools/pocket3d-icon.ts");
+  expect(tool).toContain(`cpSync(POCKET3D_ICON.ios2x, join(SITE, "icon.png"))`);
+  expect(read("wgpu/page/index.html")).toContain(`<link rel="icon" href="icon.png">`);
+});

@@ -1,0 +1,26 @@
+# What moves in Pocket Tokyo and what a frame draws, for the wgpu host in
+# ../src. The source is the 3DS core's (n3ds/core/src), as the iPod touch's
+# is: the same `tk_*` functions, called from Rust. The `host` feature leaves
+# the allocator to the program and makes the screen's shape a value
+# (`tk_shape`).
+
+[package]
+name = "tokyo-core"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[lib]
+name = "tokyo_core"
+path = "../../n3ds/core/src/lib.rs"
+
+[features]
+default = ["host"]
+host = []
+
+[dependencies]
+# libm's transcendentals: the same bits in the browser and on the build machine.
+tokyo-sim = { path = "../../crates/tokyo-sim", default-features = false }
+tokyo-pack = { path = "../../crates/tokyo-pack", default-features = false }
+# The flow around the flight; the interface's channel is reached from Rust, not through svcwire.h.
+tokyo-interface = { path = "../../crates/tokyo-interface", default-features = false }

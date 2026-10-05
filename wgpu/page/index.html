@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pocket Tokyo</title>
+<link rel="icon" href="icon.png">
+<style>
+  /* The ground of the Pocket3D title card. */
+  html, body { height: 100%; margin: 0; background: #171226; color: #cfc8e6; font: 13px/1.5 ui-sans-serif, system-ui, sans-serif; }
+  body { display: grid; grid-template-rows: 1fr auto; }
+  #room { min-height: 0; display: grid; place-items: center; overflow: hidden; }
+  /* A pixel of the city is a whole number of the display's. */
+  canvas { display: block; image-rendering: pixelated; touch-action: none; cursor: grab; }
+  canvas:active { cursor: grabbing; }
+  #say { position: fixed; inset: 0; display: grid; place-items: center; padding: 16px; text-align: center; pointer-events: none; }
+  footer { padding: 8px 16px 10px; display: flex; flex-wrap: wrap; gap: 4px 24px; justify-content: space-between; color: #8f87ab; }
+  footer span { white-space: nowrap; }
+</style>
+</head>
+<body>
+<div id="room"><canvas id="city" hidden></canvas></div>
+<div id="say" role="status"></div>
+<footer>
+  <span id="keys">W A S D fly · arrows or drag look · E Q climb, descend · Shift faster · [ ] clock · T tour</span>
+  <span id="sources">Buildings: PLATEAU, MLIT Japan · Streets: © OpenStreetMap contributors · Terrain: GSI Japan</span>
+</footer>
+<script type="module" src="main.js"></script>
+</body>
+</html>
