@@ -9,6 +9,8 @@ pub enum Target {
     Psp,
     /// Nintendo 3DS, as the vertex programs read them.
     Pica,
+    /// OpenGL ES 2 (the iPod touch): the 3DS's vertices, and pictures as 16-bit texels in row order.
+    Gles,
 }
 
 impl Target {
@@ -17,7 +19,8 @@ impl Target {
             "vita" => Ok(Target::Vita),
             "psp" => Ok(Target::Psp),
             "n3ds" => Ok(Target::Pica),
-            other => Err(format!("target {other:?} is not one of vita, psp, n3ds")),
+            "ipod" => Ok(Target::Gles),
+            other => Err(format!("target {other:?} is not one of vita, psp, n3ds, ipod")),
         }
     }
 
@@ -26,7 +29,7 @@ impl Target {
         match self {
             Target::Vita => [12, 20, 16],
             Target::Psp => [8, 12, 8],
-            Target::Pica => [8, 16, 12],
+            Target::Pica | Target::Gles => [8, 16, 12],
         }
     }
 }
