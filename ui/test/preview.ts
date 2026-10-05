@@ -24,29 +24,36 @@ const press = (index: number) => {
   rig.press(BTN.CIRCLE);
 };
 /** One list up: the heading's left end on a touch panel (`x`: where its sheet begins), the back button elsewhere. */
-const back = (x = 70) => (touch ? rig.tap(x + 30, 34) : rig.press(BTN.CROSS));
+const back = (x = 70) => (touch ? rig.tap(x + 30, 30) : rig.press(BTN.CROSS));
 
 rig.step(20);
 await save("title");
+if (touch) {
+  // A finger on a row marks it; slid off the row and lifted, it chooses nothing.
+  rig.step(3, { touch: [{ id: 9, x: 100, y: 128 }] });
+  await save("title-press");
+  for (let i = 1; i <= 6; i++) rig.step(1, { touch: [{ id: 9, x: 100 + i * 40, y: 128 }] });
+  rig.step(4);
+}
 // The hours, from the title.
-if (touch) rig.tap(80, 280);
+if (touch) rig.tap(100, 200);
 else press(2);
 rig.step(12);
 await save("title-time");
-if (touch) rig.tap(240, 174);
+if (touch) rig.tap(145, 206);
 else press(4);
 rig.mock.fly(1090, 420, 216, 318, 900, 1000);
 rig.step(8);
 back();
 rig.step(6);
-if (touch) rig.tap(260, 280);
+if (touch) rig.tap(100, 272);
 else press(4);
 rig.step(10);
 await save("about");
 back();
 rig.step(6);
 // The tour.
-if (touch) rig.tap(130, 146);
+if (touch) rig.tap(100, 128);
 else press(0);
 rig.step(20);
 await save("tour-start");
@@ -81,13 +88,13 @@ if (touch) {
 } else rig.press(BTN.START);
 rig.step(14);
 await save("menu");
-if (touch) rig.tap(340, 166);
+if (touch) rig.tap(340, 162);
 else press(3);
 rig.step(10);
 await save("settings");
 back(226);
 rig.step(6);
-if (touch) rig.tap(340, 210);
+if (touch) rig.tap(340, 206);
 else press(4);
 rig.step(10);
 await save("controls");

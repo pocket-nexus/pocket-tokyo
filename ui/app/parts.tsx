@@ -24,17 +24,20 @@ import { DIM, FAINT, GLASS, HAIRLINE, INK, NIGHT, PANEL, PLATE, tint, TOWER, WAS
 
 /**
  * A view a finger can tap, on the surface it is drawn on. It stays out of
- * the focus order: a pad has its own button for the same verb.
+ * the focus order: a pad has its own button for the same verb. While a
+ * finger is on it the view dims, or with `onHeld` its owner is told and
+ * draws the press itself.
  */
-export function Touchable(props: { surface?: SurfaceId; onTap?: () => void; class?: string; style?: Record<string, number | string>; children?: JSX.Element }) {
+export function Touchable(props: { surface?: SurfaceId; onTap?: () => void; onHeld?: (held: boolean) => void; class?: string; style?: Record<string, number | string>; children?: JSX.Element }) {
   let node: NodeMirror | undefined;
   const [down, setDown] = createSignal(false);
+  const hold = (held: boolean) => (props.onHeld ? props.onHeld(held) : setDown(held));
   createGesture({
     surface: props.surface,
     region: { node: () => node },
-    onDown: () => setDown(!!props.onTap),
-    onUp: () => setDown(false),
-    onCancel: () => setDown(false),
+    onDown: () => hold(!!props.onTap),
+    onUp: () => hold(false),
+    onCancel: () => hold(false),
     onTap: () => props.onTap?.(),
   });
   return <View ref={node} class={props.class} style={{ ...props.style, opacity: down() ? 0.55 : 1 }}>{props.children}</View>;
@@ -297,11 +300,33 @@ function Switch(props: { on: boolean }) {
   );
 }
 
+/** What a row that acts shows: its label, at the right its switch or its named value, and a rule under it. */
+export function Face(props: { row: Row; width: number; height: number }) {
+  return (
+    <>
+      <Text class="absolute text-sm font-bold" style={{ insetL: 14, insetT: props.height / 2 - 9, textColor: INK }}>{read(props.row.label)}</Text>
+      <Show when={props.row.on}>
+        <View class="absolute" style={{ insetR: 14, insetT: props.height / 2 - 9 }}><Switch on={props.row.on!()} /></View>
+      </Show>
+      <Show when={props.row.value !== undefined}>
+        <Text class="absolute text-sm" style={{ insetR: 14, insetT: props.height / 2 - 9, textColor: DIM }}>{read(props.row.value!)}</Text>
+      </Show>
+      <View class="absolute" style={{ insetL: 0, insetB: 0, width: props.width, height: 1, bgColor: HAIRLINE }} />
+    </>
+  );
+}
+
+/** The bar at the left of a list's mark; the mark itself is a wash a row tall. */
+export function Mark(props: { height: number }) {
+  return <View class="absolute" style={{ insetL: 0, insetT: 0, width: 3, height: props.height, bgColor: TOWER }} />;
+}
+
 /**
- * The rows of the list that is up. A row that acts takes a tap and, where
- * the device has buttons, the focus mark: one bar that slides to the row,
- * so moving the focus changes one node. A row that only informs is a label
- * and what it means, in a shorter line.
+ * The rows of the list that is up. A row that acts takes a tap and the
+ * list's mark: one bar, so moving it changes one node. Where the device has
+ * buttons the mark is the focus and slides to its row; where it has none the
+ * mark stands under the finger while a row is pressed. A row that only
+ * informs is a label and what it means, in a shorter line.
  *
  * Every list this view has shown stays built, hidden: showing one again
  * builds nothing, and a switch that turns writes its own row. `warm` lists
@@ -314,11 +339,14 @@ export function Rows(props: { flight: Flight; menu: Menu; width: number; rowHeig
   const rows = createMemo<Row[]>((before) => (live() ? props.flight.rows() : before), props.warm?.[0] ?? []);
   const focus = createMemo<number>((before) => (live() ? props.menu.focus() : before), 0);
   const built = createMemo<Row[][]>((before) => (!rows().length || before.includes(rows()) ? before : [...before, rows()]), props.warm ?? []);
+  // The row a finger is on, where no button moves a focus.
+  const [held, setHeld] = createSignal(-1);
+  const marked = () => (modality.buttons ? focus() : held());
   return (
     <View class="relative flex-col" style={{ width: props.width }}>
-      <Show when={modality.buttons && rows().some((row) => row.press)}>
-        <View class="absolute transition-transform duration-100 ease-out" style={{ insetL: 0, insetT: 0, width: props.width, height: props.rowHeight, translateY: focus() * props.rowHeight, bgColor: WASH }}>
-          <View class="absolute" style={{ insetL: 0, insetT: 0, width: 3, height: props.rowHeight, bgColor: TOWER }} />
+      <Show when={rows().some((row) => row.press)}>
+        <View class={modality.buttons ? "absolute transition-transform duration-100 ease-out" : "absolute"} style={{ insetL: 0, insetT: 0, width: props.width, height: props.rowHeight, translateY: Math.max(0, marked()) * props.rowHeight, display: marked() < 0 ? 1 : 0, bgColor: WASH }}>
+          <Mark height={props.rowHeight} />
         </View>
       </Show>
       <For each={built()}>
@@ -338,15 +366,8 @@ export function Rows(props: { flight: Flight; menu: Menu; width: number; rowHeig
                       </View>
                     }
                   >
-                    <Touchable surface={props.surface} class="relative" style={{ width: props.width, height }} onTap={() => props.menu.press(index())}>
-                      <Text class="absolute text-sm font-bold" style={{ insetL: 14, insetT: height / 2 - 9, textColor: INK }}>{read(row.label)}</Text>
-                      <Show when={row.on}>
-                        <View class="absolute" style={{ insetR: 14, insetT: height / 2 - 9 }}><Switch on={row.on!()} /></View>
-                      </Show>
-                      <Show when={row.value !== undefined}>
-                        <Text class="absolute text-sm" style={{ insetR: 14, insetT: height / 2 - 9, textColor: DIM }}>{read(row.value!)}</Text>
-                      </Show>
-                      <View class="absolute" style={{ insetL: 0, insetB: 0, width: props.width, height: 1, bgColor: HAIRLINE }} />
+                    <Touchable surface={props.surface} class="relative" style={{ width: props.width, height }} onTap={() => props.menu.press(index())} onHeld={modality.buttons ? undefined : (on) => setHeld(on ? index() : -1)}>
+                      <Face row={row} width={props.width} height={height} />
                     </Touchable>
                   </Show>
                 )}

@@ -6,7 +6,6 @@ import { createEffect, on, Show } from "solid-js";
 import { Text, View } from "@pocketjs/framework/components";
 import { glyph, surfaceHasTouch } from "@pocketjs/framework/modality";
 import { createFlight, createPulse, type Flight } from "../flight.ts";
-import { AREA } from "../generated/area.ts";
 import { connectHost } from "../host.ts";
 import { AreaMap, Chip, Clock, Compass, createMenu, Fade, Heading, Keep, Legend, Loading, type Menu, Note, Panel, Place, Readout, Rows, Stats, Wordmark } from "../parts.tsx";
 import { DIM } from "../theme.ts";
@@ -29,7 +28,7 @@ export default function SingleScreen() {
       <Keep when={host.mode() === "menu"} eager width={W} height={H}><Over flight={flight} menu={menu} /></Keep>
       {/* The strip stays built and is shown with a list: a list coming up builds nothing. */}
       <View class="absolute" style={{ insetL: 0, insetB: 0, display: flight.listing() ? 0 : 1 }}>
-        <Legend width={W} left={flight.mode() === "title" ? `${AREA.name}, ${AREA.district}` : flight.place()} legend={menu.actions.legend()} />
+        <Legend width={W} left={flight.notice()} legend={menu.actions.legend()} />
       </View>
     </View>
   );
