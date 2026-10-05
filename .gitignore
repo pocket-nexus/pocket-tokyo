@@ -5,6 +5,7 @@
 /n3ds/core/target/
 /n3ds/build/
 /android/core/target/
+/wgpu/target/
 /dist/
 node_modules/
 

@@ -100,3 +100,10 @@ test("Android: the package gets PocketJS's file of each density, as it is, and t
   expect(read("android/AndroidManifest.xml")).toContain(`android:icon="@drawable/icon"`);
   expect(Object.keys(POCKET3D_ICON_ANDROID)).toEqual(["mdpi", "hdpi", "xhdpi", "xxhdpi"]);
 });
+
+test("the browser tab: the site gets PocketJS's file as its icon", () => {
+  const tool = read("tools/wgpu.ts");
+  expect(tool).toContain("tools/pocket3d-icon.ts");
+  expect(tool).toContain(`cpSync(POCKET3D_ICON.ios2x, join(SITE, "icon.png"))`);
+  expect(read("wgpu/page/index.html")).toContain(`<link rel="icon" href="icon.png">`);
+});
