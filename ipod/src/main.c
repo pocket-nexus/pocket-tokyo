@@ -1,26 +1,35 @@
 // Pocket Tokyo on the iPod touch 4 (iOS 6): the shell around the renderer
-// (render.c) and the Rust core (../core, the 3DS core's source), which says
-// where the eye is, what the light is and what a frame draws.
+// (render.c), the Rust core (../core, the 3DS core's source), which says
+// where the eye is, what the light is and what a frame draws, and the
+// interface, a PocketJS guest (ui/, QuickJS) drawn over the city. The device
+// has a touch panel and no pad: the stick, the keys and the view all come from
+// the interface's touch presentation as `drive` and `look` commands, which the
+// core's flow applies to the flight. This shell draws no 2D of its own.
 //
 // The same city as the Vita build, lowered by the city compiler for this
 // machine (profiles/ipod60.json): 480 x 320 with four samples a pixel at 60
 // frames a second, OpenGL ES 2 on the SGX535.
 //
 // The device builds from the macOS SDK's C headers, so UIKit is reached
-// through the Objective-C runtime. The main thread owns UIKit; one render
-// thread owns the GL context and the flight, and they share only `shared`
-// under its lock. A third thread, below the render thread's priority, reads
+// through the Objective-C runtime. The main thread owns UIKit and receives
+// touches; one render thread owns the GL context, the flight and the guest,
+// and they share only `shared` under its lock. A third thread, below the render thread's priority, reads
 // the cells' near levels from the pack and sweeps the shadows.
 //
 // The EAGL layer is the portrait screen at 320x480, opaque and untransformed,
 // with nothing over it: Core Animation shows the frame as it is instead of
-// compositing it with the same GPU. Everything is drawn a quarter turn round,
-// for a device held with its home button on the right.
+// compositing it with the same GPU. The interface is drawn into a texture
+// when what it shows changes, and every program of the scene reads that
+// texture at its own pixel. Everything is drawn a quarter turn round, for a device
+// held with its home button on the right.
 //
 // Development loop (tools/ipod.ts): `tmp/control.txt` holds a nonce and words
-// for this shell and for the flight (tokyo_sim::flight::Flight::control);
-// `tmp/status.json` reports the run.
+// for this shell, for the flow (tk_remote) and for the flight
+// (tokyo_sim::flight::Flight::control); `tmp/status.json` reports the run.
+#include "contact_latch.h"
+#include "pocket_runtime.h"
 #include "render.h"
+#include "svcwire.h"
 #define GL_SILENCE_DEPRECATION 1
 #include <OpenGL/gl3.h>
 #include <fcntl.h>
@@ -44,11 +53,22 @@
 #define BUDGET 32000
 #endif
 
+// Guest turns a second at most: one per frame, so the stick and the keys reach
+// the flight the frame after a thumb moves. A turn advances the UI core by the
+// display refreshes since the last one.
+#ifndef TURN_HZ
+#define TURN_HZ 60
+#endif
 #define TAG(a, b, c, d) ((uint32_t)(a) | ((uint32_t)(b) << 8) | ((uint32_t)(c) << 16) | ((uint32_t)(d) << 24))
 typedef struct {
+  float x, y;
+} Spot; // CGPoint: CGFloat is a float on this device
+typedef struct {
   float x, y, width, height;
-} Frame; // CGRect: CGFloat is a float on this device
+} Frame; // CGRect
 extern int UIApplicationMain(int, char **, id, id);
+extern uint64_t ui_draw_hash(void);
+extern int32_t ui_gl_render_over(int32_t, int32_t, int32_t, int32_t, int32_t, int32_t);
 extern void glDiscardFramebufferEXT(GLenum, GLsizei, const GLenum *);
 // APPLE_framebuffer_multisample
 extern void glRenderbufferStorageMultisampleAPPLE(GLenum, GLsizei, GLenum, GLsizei, GLsizei);
@@ -63,11 +83,12 @@ extern void glResolveMultisampleFramebufferAPPLE(void);
 enum { WINDOW = 120 };
 
 static struct {
+  PocketContactLatch touches;
   bool active, parked;
 } shared = {.active = true};
 static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t changed = PTHREAD_COND_INITIALIZER;
-static char bundle[1024], tmp[1024];
+static char bundle[1024], tmp[1024], documents[1024];
 static id context, view;
 static GLuint framebuffer, colorbuffer;
 // The scene's own target, with SAMPLES samples a pixel; it is resolved into `framebuffer`.
@@ -98,6 +119,24 @@ static void write_file(const char *directory, const char *name, const void *data
   fwrite(data, 1, size, file);
   fclose(file);
   rename(staging, path);
+}
+
+// A whole file, with a NUL after it; `before` goes in front.
+static char *read_file(const char *directory, const char *name, const char *before, size_t *size) {
+  char path[1100];
+  snprintf(path, sizeof path, "%s/%s", directory, name);
+  FILE *file = fopen(path, "rb");
+  if (!file)
+    return NULL;
+  fseek(file, 0, SEEK_END);
+  size_t length = ftell(file), lead = strlen(before);
+  rewind(file);
+  char *data = malloc(lead + length + 1);
+  memcpy(data, before, lead);
+  *size = lead + fread(data + lead, 1, length, file);
+  data[*size] = 0;
+  fclose(file);
+  return data;
 }
 
 // ---- the pack
@@ -323,27 +362,40 @@ static void arrivals(void) {
 // ---- render thread
 
 enum { LOADING, RUNNING, FAILED };
-// Milliseconds per presented frame: the frame, its work, the flight, choosing
-// the draws, what arrived for the GPU, the scene's commands (with the samples
+// Milliseconds per presented frame: the frame, its work, the flight, the
+// guest's turn, the interface's redraw (with the check that says whether one
+// is due), choosing the draws, what arrived for the GPU, the scene's commands (with the samples
 // resolved, which waits for the GPU to take the frame before), the GPU's own
 // work when a run asks for it to be timed, handing the frame over, the present.
-enum { INTERVAL, WORK, SIM, CHOOSE, ARRIVALS, SCENE, GPU, KICK, PRESENT, TIMINGS };
+enum { INTERVAL, WORK, SIM, GUEST, REDRAW, CHOOSE, ARRIVALS, SCENE, GPU, KICK, PRESENT, TIMINGS };
 static float timing[TIMINGS][WINDOW];
 static int stage = LOADING;
-static unsigned frames, late;
+static bool guest;
+static unsigned frames, late, turns, redraws;
 static char command[40], captured[40], failure[512];
-static GLuint overlay;
+// The interface is drawn into one of two textures in turn: the frame the GPU
+// still works on reads the other, so a redraw never waits for it.
+static GLuint interface_target[2], interface_texture[2], overlay;
+static unsigned interface_shown;
 static TkPerf perf;
+// Contacts a command holds on the panel, for driving the interface from the
+// host; `tap` lifts them again after that many turns.
+static struct {
+  int count;
+  float at[4][2];
+} fingers, fingered;
+static int tap;
 // A measurement the device takes by itself: `mark=SECONDS` starts one three
 // seconds later, and the host reads it when it is done. Asking the device
 // anything over SSH costs its one core a few frames, so nothing is asked
 // while the window is open.
 static struct {
   double from, until, seconds;
-  unsigned frames, late, min_tris, max_tris, max_draws;
+  unsigned frames, late, min_tris, max_tris, max_draws, turns, redraws;
   uint64_t tris, draws;
   float worst;
-  double sums[TIMINGS];
+  // (the guest's turns, and the redraws of the interface's texture alone)
+  double sums[TIMINGS], turn_ms, redraw_ms;
   bool done;
 } measured;
 
@@ -364,9 +416,9 @@ static int summary(char *out, size_t capacity, const char *name, const float *a)
                   n ? sorted[n - 1] : 0);
 }
 static void status(void) {
-  static const char *const names[TIMINGS] = {"intervalMs", "workMs", "simMs", "chooseMs", "arrivalsMs", "sceneMs", "finishMs", "kickMs", "presentMs"};
+  static const char *const names[TIMINGS] = {"intervalMs", "workMs", "simMs", "guestMs", "interfaceDrawMs", "chooseMs", "arrivalsMs", "sceneMs", "finishMs", "kickMs", "presentMs"};
   static const char *const stages[] = {"loading", "running", "failed"};
-  static char text[6144], extra[3072], error[2 * sizeof failure];
+  static char text[6144], extra[4096], error[2 * sizeof failure];
   unsigned e = 0;
   for (const char *c = failure; *c && e < sizeof error - 2; c++) {
     if (*c == '"' || *c == '\\')
@@ -384,15 +436,17 @@ static void status(void) {
     at += summary(extra + at, sizeof extra - at, names[i], timing[i]);
   at += snprintf(extra + at, sizeof extra - at,
                  "\"packBytes\":%llu,\"slotBytes\":%u,\"read\":{\"cells\":%u,\"ms\":%u},\"shadows\":{\"sweeps\":%u,\"ms\":%u},"
+                 "\"guest\":{\"running\":%s,\"error\":\"%s\",\"turnHz\":%d,\"turns\":%u,\"redraws\":%u},"
                  "\"residentBytes\":%u,\"glError\":%u,\"lastCommand\":\"%s\",\"capture\":\"%s\"",
-                 (unsigned long long)pack_bytes, slot_bytes, cells_read, read_ms_total, sweeps, sweep_ms_last, (unsigned)task.resident_size, glGetError(), command,
-                 captured);
+                 (unsigned long long)pack_bytes, slot_bytes, cells_read, read_ms_total, sweeps, sweep_ms_last, guest ? "true" : "false",
+                 guest ? "" : pocket_runtime_error(), TURN_HZ, turns, redraws, (unsigned)task.resident_size, glGetError(), command, captured);
   at += snprintf(extra + at, sizeof extra - at,
                  ",\"window\":{\"done\":%s,\"seconds\":%.3f,\"frames\":%u,\"late\":%u,\"worstMs\":%.3f,\"minTris\":%u,\"maxTris\":%u,\"meanTris\":%.0f,\"maxDraws\":%u,"
-                 "\"meanDraws\":%.0f,\"meanMs\":{",
+                 "\"meanDraws\":%.0f,\"turns\":%u,\"redraws\":%u,\"turnMs\":%.3f,\"redrawMs\":%.3f,\"meanMs\":{",
                  measured.done ? "true" : "false", measured.seconds, measured.frames, measured.late, measured.worst, measured.frames ? measured.min_tris : 0,
                  measured.max_tris, measured.frames ? (double)measured.tris / measured.frames : 0, measured.max_draws,
-                 measured.frames ? (double)measured.draws / measured.frames : 0);
+                 measured.frames ? (double)measured.draws / measured.frames : 0, measured.turns, measured.redraws,
+                 measured.turns ? measured.turn_ms / measured.turns : 0, measured.redraws ? measured.redraw_ms / measured.redraws : 0);
   for (unsigned i = 0; i < TIMINGS; i++)
     at += snprintf(extra + at, sizeof extra - at, "%s\"%.*s\":%.3f", i ? "," : "", (int)strlen(names[i]) - 2, names[i], measured.frames ? measured.sums[i] / measured.frames : 0);
   at += snprintf(extra + at, sizeof extra - at, "}}");
@@ -422,13 +476,26 @@ static void *reporter(void *unused) {
   return NULL;
 }
 
-// The pass that lays a landscape picture over the frame: the title card's.
+// The interface's own drawable, and the pass that shows a landscape picture
+// by itself: the title card's frames, and the interface while the pack is read.
 static void cover(void) {
+  glGenTextures(2, interface_texture);
+  glGenFramebuffers(2, interface_target);
+  for (unsigned i = 0; i < 2; i++) {
+    glBindTexture(GL_TEXTURE_2D, interface_texture[i]);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, WIDTH, HEIGHT, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glBindFramebuffer(GL_FRAMEBUFFER, interface_target[i]);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, interface_texture[i], 0);
+  }
   static const char *const sources[2] = {
     // The picture is landscape: its x runs down the portrait drawable.
-    "attribute vec2 aPos; varying vec2 vAt;\n"
+    "attribute vec2 aPos; varying highp vec2 vAt;\n"
     "void main() { gl_Position = vec4(aPos, 0.0, 1.0); vAt = vec2(0.5 - aPos.y * 0.5, 0.5 + aPos.x * 0.5); }\n",
-    "precision mediump float; uniform sampler2D uPicture; varying vec2 vAt;\n"
+    "precision lowp float; uniform sampler2D uPicture; varying highp vec2 vAt;\n"
     "void main() { gl_FragColor = texture2D(uPicture, vAt); }\n"};
   overlay = glCreateProgram();
   for (unsigned i = 0; i < 2; i++) {
@@ -512,11 +579,22 @@ static void title(void) {
 }
 
 // A word of a control message that is this shell's:
+//   touch=X,Y[;X,Y…]  fingers held on the panel, in the interface's pixels; touch=off lifts them
+//   tap=X,Y           one finger down for a few turns
 //   screen=1          writes the next presented frame to tmp/screen.rgba
 //   mark=SECONDS      measures that long, starting in three seconds (`window` in the status)
 static bool screen;
 static void host_word(const char *word) {
-  if (!strcmp(word, "screen=1"))
+  if (!strncmp(word, "touch=", 6) || !strncmp(word, "tap=", 4)) {
+    tap = word[1] == 'a' ? 6 : 0;
+    fingers.count = 0;
+    for (const char *at = strchr(word, '=') + 1; fingers.count < 4 && sscanf(at, "%f,%f", &fingers.at[fingers.count][0], &fingers.at[fingers.count][1]) == 2;) {
+      fingers.count++;
+      at = strchr(at, ';');
+      if (!at++)
+        break;
+    }
+  } else if (!strcmp(word, "screen=1"))
     screen = true;
   else if (!strncmp(word, "mark=", 5)) {
     memset(&measured, 0, sizeof measured);
@@ -532,10 +610,26 @@ static void *render(void *unused) {
   pthread_create(&writer, NULL, reporter, NULL);
   cover();
   title();
+  // The interface is up before the pack is read, so the load shows through it.
+  static const char reading[] = "Reading the city";
+  tk_stage(TK_STAGE_LOADING, reading, sizeof reading - 1);
+  size_t script_size, pak_size, prefs_size;
+  char rate[40];
+  snprintf(rate, sizeof rate, "globalThis.__simHz=%d;", TURN_HZ);
+  char *script = read_file(bundle, "tokyo.js", rate, &script_size), *pak = read_file(bundle, "tokyo.pak", "", &pak_size);
+  char *prefs = read_file(documents, "interface.json", "", &prefs_size);
+  if (prefs)
+    tk_prefs_stored(prefs, prefs_size);
+  free(prefs);
+  guest = script && pak && pocket_runtime_boot(script, script_size, (const uint8_t *)pak, pak_size, WIDTH, HEIGHT) && pocket_runtime_gl_initialize();
+  if (!guest)
+    snprintf(failure, sizeof failure, "interface: %s", script && pak ? pocket_runtime_error() : "tokyo.js or tokyo.pak is missing");
 
   char path[1200], words[1024];
   double previous = now(), started = previous, reported = 0;
+  unsigned owed = 0; // display refreshes since the guest's last turn
   float average = 16.7f;
+  uint64_t drawn_hash = 0;
   snprintf(path, sizeof path, "%s/control.txt", tmp);
   unlink(path);
   for (;;) {
@@ -565,6 +659,8 @@ static void *render(void *unused) {
         *text++ = 0;
         snprintf(command, sizeof command, "%s", words);
         text[strcspn(text, "\r\n")] = 0;
+        // (the flow's words, `mode=` and `ui=`, and the flight's)
+        tk_remote(text, strlen(text));
         if (stage == RUNNING)
           tk_control(text, strlen(text));
         char *save = NULL;
@@ -582,7 +678,7 @@ static void *render(void *unused) {
     ticks = ticks < 1 ? 1 : ticks > 3 ? 3 : ticks;
     unsigned slot = frames % WINDOW;
 
-    // The pack loads once a frame has been shown under the card's last one.
+    // The pack loads once the interface has had two frames to say so.
     if (stage == LOADING && frames >= 2) {
       if (load(failure, sizeof failure)) {
         stage = RUNNING;
@@ -598,8 +694,10 @@ static void *render(void *unused) {
         pthread_attr_setschedpolicy(&attributes, SCHED_OTHER);
         pthread_attr_setschedparam(&attributes, &priority);
         pthread_create(&reader, &attributes, worker, NULL);
-      } else
+      } else {
         stage = FAILED;
+        tk_stage(TK_STAGE_ERROR, failure, strlen(failure));
+      }
       start = started = now();
     }
 
@@ -609,19 +707,88 @@ static void *render(void *unused) {
     uint32_t counts[TK_KINDS] = {0};
     timing[SIM][slot] = timing[CHOOSE][slot] = timing[ARRIVALS][slot] = 0;
     if (stage == RUNNING) {
+      // What the interface asked for since the last frame, then the flight. The pad stays empty: the stick,
+      // the keys and the drags are the interface's commands.
       const TkPad nobody = {0};
       tk_step(&nobody, ticks);
+      tk_report(&perf);
+      static char keep[4096];
+      uint32_t n = tk_prefs_take(keep, sizeof keep);
+      if (n)
+        write_file(documents, "interface.json", keep, n);
       tk_view(&seen);
       want_shade = seen.shade;
       for (int k = 0; k < 3; k++)
         want_sun[k] = seen.sun[k];
-      double stepped = now();
+    }
+    double stepped = now();
+    timing[SIM][slot] = stage == RUNNING ? (float)(stepped - start) * 1000 : 0;
+
+    // The interface's turn, when it is worth one: what the fingers are doing
+    // goes in, the flight's state is read and commands are left for the next
+    // tk_step. It is redrawn into its texture when what it shows has changed.
+    timing[GUEST][slot] = timing[REDRAW][slot] = 0;
+    bool turned = false, redrawn = false;
+    owed += ticks;
+    if (guest && owed >= 60 / TURN_HZ) {
+      PocketRuntimeContactsInput input;
+      pthread_mutex_lock(&lock);
+      if (tap && !--tap)
+        fingers.count = 0;
+      for (int i = 0; i < 4; i++) {
+        if (i < fingers.count)
+          pocket_contact_event(&shared.touches, i < fingered.count ? POCKET_TOUCH_MOVE : POCKET_TOUCH_DOWN, -1 - i, fingers.at[i][0], fingers.at[i][1], WIDTH, HEIGHT);
+        else if (i < fingered.count)
+          pocket_contact_event(&shared.touches, POCKET_TOUCH_UP, -1 - i, fingered.at[i][0], fingered.at[i][1], WIDTH, HEIGHT);
+      }
+      bool touching = fingers.count || fingered.count;
+      fingered = fingers;
+      pocket_contacts_sample(&shared.touches, &input, WIDTH, HEIGHT, WIDTH, HEIGHT, pocket_runtime_hit_test_bounds);
+      pthread_mutex_unlock(&lock);
+      // (a finger that has just lifted still has its end to deliver)
+      touching = touching || input.contact_count || input.cancelled_count;
+      if (tk_guest_due(0, touching)) {
+        unsigned elapsed = owed > 3 ? 3 : owed;
+        owed = 0;
+        turned = true;
+        turns++;
+        input.buttons = 0;
+        if (!pocket_runtime_frame_contacts(&input, elapsed)) {
+          // The guest threw: the city goes on without it, and the status says why.
+          guest = false;
+          snprintf(failure, sizeof failure, "interface: %s", pocket_runtime_error());
+          svcwire_shutdown();
+        }
+        double done = now();
+        // The texture follows what the interface shows on every other frame
+        // at most: a frame that lays it out and draws it twice in a row
+        // misses its refresh.
+        static unsigned redrawn_at;
+        uint64_t hash = guest && frames - redrawn_at >= 2 ? ui_draw_hash() : drawn_hash;
+        if (hash != drawn_hash) {
+          drawn_hash = hash;
+          redrawn_at = frames;
+          redrawn = true;
+          redraws++;
+          interface_shown ^= 1;
+          glBindFramebuffer(GL_FRAMEBUFFER, interface_target[interface_shown]);
+          glViewport(0, 0, WIDTH, HEIGHT);
+          glDisable(GL_SCISSOR_TEST);
+          glClearColor(0, 0, 0, 0);
+          glClear(GL_COLOR_BUFFER_BIT);
+          ui_gl_render_over(0, 0, WIDTH, HEIGHT, WIDTH, HEIGHT);
+        }
+        timing[GUEST][slot] = (float)(done - stepped) * 1000;
+        timing[REDRAW][slot] = (float)(now() - done) * 1000;
+      }
+    }
+    if (stage == RUNNING) {
+      stepped = now();
       arrivals();
       double arrived = now();
       tk_choose(lists, counts);
       tk_refill();
       double chosen = now();
-      timing[SIM][slot] = (float)(stepped - start) * 1000;
       timing[ARRIVALS][slot] = (float)(arrived - stepped) * 1000;
       timing[CHOOSE][slot] = (float)(chosen - arrived) * 1000;
     }
@@ -631,7 +798,8 @@ static void *render(void *unused) {
     bool sampled = stage == RUNNING && scene_target && !(seen.option & 1024);
     glBindFramebuffer(GL_FRAMEBUFFER, sampled ? scene_target : framebuffer);
     if (stage == RUNNING) {
-      render_frame(&seen, lists, counts);
+      // The interface is a picture every program of the scene reads at its own pixel: no pass of its own.
+      render_frame(&seen, lists, counts, guest ? interface_texture[interface_shown] : 0);
       if (sampled) {
         static const GLenum both[2] = {GL_COLOR_ATTACHMENT0, GL_DEPTH_ATTACHMENT};
         glBindFramebuffer(READ_FRAMEBUFFER_APPLE, scene_target);
@@ -641,10 +809,29 @@ static void *render(void *unused) {
         glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
       }
     } else {
+      // Before the city is there, the interface alone: over the ground of the title card.
+      static const float corners[8] = {-1, -1, 1, -1, -1, 1, 1, 1};
       glViewport(0, 0, HEIGHT, WIDTH);
       glDisable(GL_SCISSOR_TEST);
-      glClearColor(0, 0, 0, 1);
+      glClearColor(0.09f, 0.07f, 0.15f, 1);
       glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+      if (guest) {
+        glDisable(GL_DEPTH_TEST);
+        glDisable(GL_CULL_FACE);
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA); // the interface's texture holds premultiplied colour
+        glBindBuffer(GL_ARRAY_BUFFER, 0);
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
+        glEnableVertexAttribArray(0);
+        for (int i = 1; i < 4; i++)
+          glDisableVertexAttribArray(i);
+        glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, corners);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, interface_texture[interface_shown]);
+        glUseProgram(overlay);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        glDisable(GL_BLEND);
+      }
     }
     double drawn = now();
     timing[SCENE][slot] = (float)(drawn - drawing) * 1000;
@@ -698,6 +885,11 @@ static void *render(void *unused) {
         measured.worst = fmaxf(measured.worst, interval);
         measured.tris += tris;
         measured.draws += render_stats.draws;
+        measured.turns += turned;
+        measured.redraws += redrawn;
+        measured.turn_ms += timing[GUEST][slot];
+        if (redrawn)
+          measured.redraw_ms += timing[REDRAW][slot];
         if (tris > measured.max_tris)
           measured.max_tris = tris;
         if (render_stats.draws > measured.max_draws)
@@ -722,6 +914,21 @@ static void *render(void *unused) {
 
 // ---- main thread
 
+// Every finger goes to the interface, in its landscape pixels.
+static void touched(id self, SEL _cmd, id touches, id event) {
+  (void)_cmd, (void)event;
+  id all = send(touches, "allObjects");
+  unsigned count = ((unsigned (*)(id, SEL))objc_msgSend)(all, sel("count"));
+  pthread_mutex_lock(&lock);
+  for (unsigned i = 0; i < count; i++) {
+    id touch = ((id(*)(id, SEL, unsigned))objc_msgSend)(all, sel("objectAtIndex:"), i);
+    Spot at = ((Spot(*)(id, SEL, id))objc_msgSend_stret)(touch, sel("locationInView:"), self);
+    int phase = ((int (*)(id, SEL))objc_msgSend)(touch, sel("phase")); // began, moved, stationary, ended, cancelled
+    pocket_contact_event(&shared.touches, phase == 0 ? POCKET_TOUCH_DOWN : phase == 3 ? POCKET_TOUCH_UP : phase == 4 ? POCKET_TOUCH_CANCEL : POCKET_TOUCH_MOVE,
+                         (int)((uintptr_t)touch >> 4 & 0x3fffffff), at.y, HEIGHT - at.x, WIDTH, HEIGHT);
+  }
+  pthread_mutex_unlock(&lock);
+}
 static Class layer_class(id self, SEL _cmd) {
   (void)self, (void)_cmd;
   return objc_getClass("CAEAGLLayer");
@@ -730,6 +937,7 @@ static void active(id self, SEL _cmd, id application) {
   (void)self, (void)application;
   pthread_mutex_lock(&lock);
   shared.active = _cmd == sel("applicationDidBecomeActive:");
+  pocket_contacts_cancel(&shared.touches);
   pthread_cond_broadcast(&changed);
   while (!shared.active && !shared.parked)
     pthread_cond_wait(&changed, &lock);
@@ -739,12 +947,14 @@ static BOOL launched(id self, SEL _cmd, id application, id options) {
   (void)self, (void)_cmd, (void)options;
   snprintf(bundle, sizeof bundle, "%s", ((const char *(*)(id, SEL))objc_msgSend)(send(send(cls("NSBundle"), "mainBundle"), "bundlePath"), sel("UTF8String")));
   snprintf(tmp, sizeof tmp, "%s/tmp", getenv("HOME"));
+  snprintf(documents, sizeof documents, "%s/Documents", getenv("HOME"));
 
   // PocketJS's link stubs carry no UIKit version, and UIKit gives an app that
   // old one pixel per point: the layer is 320 by 480 pixels.
   id window = ((id(*)(id, SEL, Frame))objc_msgSend)(send(cls("UIWindow"), "alloc"), sel("initWithFrame:"), (Frame){0, 0, HEIGHT, WIDTH});
   view = ((id(*)(id, SEL, Frame))objc_msgSend)(send(cls("TokyoView"), "alloc"), sel("initWithFrame:"), (Frame){0, 0, HEIGHT, WIDTH});
   send_id(window, "addSubview:", view);
+  send_int(view, "setMultipleTouchEnabled:", 1);
   send_int(send(view, "layer"), "setOpaque:", 1);
   context = ((id(*)(id, SEL, int))objc_msgSend)(send(cls("EAGLContext"), "alloc"), sel("initWithAPI:"), 2);
   send_id(cls("EAGLContext"), "setCurrentContext:", context);
@@ -780,6 +990,7 @@ static BOOL launched(id self, SEL _cmd, id application, id options) {
   send_id(cls("EAGLContext"), "setCurrentContext:", NULL);
   send(window, "makeKeyAndVisible");
   send_int(application, "setIdleTimerDisabled:", 1);
+  // The guest's parser recurses: give its thread the main thread's megabyte.
   pthread_t thread;
   pthread_attr_t attributes;
   pthread_attr_init(&attributes);
@@ -791,6 +1002,10 @@ int main(int argc, char **argv) {
   send(send(cls("NSAutoreleasePool"), "alloc"), "init");
   Class surface = objc_allocateClassPair(objc_getClass("UIView"), "TokyoView", 0);
   class_addMethod(object_getClass((id)surface), sel("layerClass"), (IMP)layer_class, "#@:");
+  static const char *const touches[] = {"touchesBegan:withEvent:", "touchesMoved:withEvent:", "touchesEnded:withEvent:",
+                                        "touchesCancelled:withEvent:"};
+  for (unsigned i = 0; i < 4; i++)
+    class_addMethod(surface, sel(touches[i]), (IMP)touched, "v@:@@");
   objc_registerClassPair(surface);
   Class delegate = objc_allocateClassPair(objc_getClass("NSObject"), "TokyoDelegate", 0);
   class_addMethod(delegate, sel("application:didFinishLaunchingWithOptions:"), (IMP)launched, "c@:@@");

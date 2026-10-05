@@ -41,8 +41,9 @@ extern RenderStats render_stats;
 
 // The GL context is current for all of these.
 bool render_init(const RenderData *data, char *error, size_t capacity);
-// One frame into the bound framebuffer, a quarter turn round.
-void render_frame(const TkView *view, const TkItem *const lists[TK_KINDS], const uint32_t counts[TK_KINDS]);
+// One frame into the bound framebuffer, a quarter turn round. `over`: a texture of the screen as it is held
+// (WIDTH by HEIGHT, premultiplied colour) that every pixel is shown under, or 0 for none: the interface.
+void render_frame(const TkView *view, const TkItem *const lists[TK_KINDS], const uint32_t counts[TK_KINDS], unsigned over);
 // A cell's record that has arrived for a slot: its vertices, indices and picture go to the GPU.
 void render_cell(unsigned slot, const TkNearCell *record, const uint8_t *bytes);
 // Rows of a sweep of the shadows (MAP_SIDE texels of 8 bits each), from row `first`; with `last`, frames

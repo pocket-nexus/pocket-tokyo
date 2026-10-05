@@ -54,6 +54,8 @@ static const char *const vertex_source =
   "attribute vec3 aPos;\n"
   "varying lowp float vHaze;\n"
   "varying lowp vec3 vLight;\n"
+  // Where the pixel lies in the picture laid over the frame (the interface), before the division by w.
+  "varying highp vec3 vOver;\n"
   "#ifdef TOP\n"
   // A vertex is its place over a block and how much of the sky it sees. The
   // picture's coordinates, and those of the lamps' light and of the shadows,
@@ -85,6 +87,8 @@ static const char *const vertex_source =
   "#endif\n"
   "void main() {\n"
   "  gl_Position = uMvp * vec4(aPos, 1.0);\n"
+  // (the picture is landscape: its x runs down the portrait drawable)
+  "  vOver = vec3(0.5 * (gl_Position.w - gl_Position.y), 0.5 * (gl_Position.w + gl_Position.x), gl_Position.w);\n"
   "#ifdef TOP\n"
   "  vPic = aPos.xz * uPic.xz + uPic.yw;\n"
   "  vMap = aPos.xz * uMap.xz + uMap.yw;\n"
@@ -117,12 +121,22 @@ static const char *const vertex_source =
 // picture read in `mediump`, a night frame of 43 000 triangles took a refresh
 // and a quarter. Light travels at half scale, as on the 3DS, and is doubled
 // by an addition.
+//
+// The interface is one more picture every program reads, at the pixel's own
+// place (a projective read from a varying, which the SGX fetches ahead of the
+// program like any other): colour x (1 - its alpha) + its colour. Laid over
+// the frame as a blended quad it cost 5.6 ms a frame in a target of four
+// samples, and 8 ms as a pass of its own over the resolved scene.
 static const char *const fragment_source =
   "precision lowp float;\n"
   // rgb: the haze; a: how far the lamps are on
   "uniform lowp vec4 uFog;\n"
   "varying lowp float vHaze;\n"
   "varying lowp vec3 vLight;\n"
+  // The picture over the frame, in premultiplied colour.
+  "uniform sampler2D uOver;\n"
+  "varying highp vec3 vOver;\n"
+  "#define SHOW(c) lowp vec4 over = texture2DProj(uOver, vOver); gl_FragColor = vec4((c) * (1.0 - over.a) + over.rgb, 1.0);\n"
   "#ifdef TOP\n"
   "uniform sampler2D uTex0;\n" // the picture from above
   "uniform sampler2D uTex1;\n" // the lamps' light
@@ -140,7 +154,7 @@ static const char *const fragment_source =
   "  lowp vec3 light = vLight + texture2D(uTex1, vMap).rgb * uFog.a;\n"
   "#endif\n"
   "  lowp vec3 c = texture2D(uTex0, vPic).rgb * light;\n"
-  "  gl_FragColor = vec4(mix(c + c, uFog.rgb, vHaze), 1.0);\n"
+  "  SHOW(mix(c + c, uFog.rgb, vHaze))\n"
   "}\n"
   "#endif\n"
   "#ifdef WALL\n"
@@ -155,14 +169,14 @@ static const char *const fragment_source =
   "#else\n"
   "  c += c;\n"
   "#endif\n"
-  "  gl_FragColor = vec4(mix(c, uFog.rgb, vHaze), 1.0);\n"
+  "  SHOW(mix(c, uFog.rgb, vHaze))\n"
   "}\n"
   "#endif\n"
   "#ifdef SOLID\n"
-  "void main() { gl_FragColor = vec4(mix(vLight + vLight, uFog.rgb, vHaze), 1.0); }\n"
+  "void main() { SHOW(mix(vLight + vLight, uFog.rgb, vHaze)) }\n"
   "#endif\n"
   "#ifdef SKY\n"
-  "void main() { gl_FragColor = vec4(vLight, 1.0); }\n"
+  "void main() { SHOW(vLight) }\n"
   "#endif\n";
 
 static Program programs[PROGRAMS];
@@ -175,6 +189,8 @@ static GLuint shadows[2];
 static unsigned shadows_shown;
 // A slot: a cell's vertices (its three kinds one after another, as the record holds them), indices and picture.
 static GLuint slot_vertices[TK_SLOTS], slot_indices[TK_SLOTS], slot_picture[TK_SLOTS];
+// What is laid over a frame when there is no picture to lay: one clear texel.
+static GLuint nothing;
 static unsigned slot_width[TK_SLOTS];
 static TkSkyVertex sky_vertices[TK_DOME_VERTS];
 static uint16_t sky_indices[TK_DOME_INDICES];
@@ -221,8 +237,8 @@ static bool link_program(Program *p, const char *define, char *error, size_t cap
   p->lights = glGetUniformLocation(p->id, "uLights");
   p->scale = glGetUniformLocation(p->id, "uScale");
   glUseProgram(p->id);
-  static const char *const units[3] = {"uTex0", "uTex1", "uTex2"};
-  for (int i = 0; i < 3; i++) {
+  static const char *const units[4] = {"uTex0", "uTex1", "uTex2", "uOver"};
+  for (int i = 0; i < 4; i++) {
     GLint at = glGetUniformLocation(p->id, units[i]);
     if (at >= 0)
       glUniform1i(at, i);
@@ -340,6 +356,12 @@ bool render_init(const RenderData *data, char *error, size_t capacity) {
     if (finer)
       glTexParameterf(GL_TEXTURE_2D, TEXTURE_MAX_ANISOTROPY, 2.0f);
   }
+  static const uint8_t clear[4] = {0, 0, 0, 0};
+  glGenTextures(1, &nothing);
+  glBindTexture(GL_TEXTURE_2D, nothing);
+  glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 1, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, clear);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
   tk_sky_indices(sky_indices);
   if (glGetError() != GL_NO_ERROR) {
     snprintf(error, capacity, "OpenGL refused an upload");
@@ -357,6 +379,7 @@ static uint32_t part(const TkNearCell *r, unsigned k) {
 }
 
 void render_cell(unsigned slot, const TkNearCell *r, const uint8_t *bytes) {
+  glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
   glBindBuffer(GL_ARRAY_BUFFER, slot_vertices[slot]);
   glBufferData(GL_ARRAY_BUFFER, part(r, 3), bytes, GL_DYNAMIC_DRAW);
   glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, slot_indices[slot]);
@@ -381,6 +404,7 @@ void render_cell(unsigned slot, const TkNearCell *r, const uint8_t *bytes) {
 // A sweep goes into the texture no frame reads, a strip a frame: writing into a texture that a frame still
 // on its way to the screen reads makes the driver copy the whole of it first. `last`: frames read it from now.
 void render_shadows(const uint8_t *texels, unsigned first, unsigned rows, bool last) {
+  glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
   glActiveTexture(GL_TEXTURE2);
   glBindTexture(GL_TEXTURE_2D, shadows[shadows_shown ^ 1]);
   glTexSubImage2D(GL_TEXTURE_2D, 0, 0, first, MAP_SIDE, rows, LUMINANCE, GL_UNSIGNED_BYTE, texels + (size_t)first * MAP_SIDE);
@@ -509,7 +533,7 @@ static const Program *use(unsigned which, const TkView *view, float lamps_on) {
   return p;
 }
 
-void render_frame(const TkView *view, const TkItem *const lists[TK_KINDS], const uint32_t counts[TK_KINDS]) {
+void render_frame(const TkView *view, const TkItem *const lists[TK_KINDS], const uint32_t counts[TK_KINDS], unsigned over) {
   memset(&render_stats, 0, sizeof render_stats);
   // The frame is the landscape screen turned a quarter: the drawable's x is its y, the drawable's y its -x.
   static const float quarter[16] = {0, -1, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
@@ -538,6 +562,9 @@ void render_frame(const TkView *view, const TkItem *const lists[TK_KINDS], const
   glClearColor(view->haze[0], view->haze[1], view->haze[2], 1);
   glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
   glFrontFace(GL_CCW);
+  glActiveTexture(GL_TEXTURE3);
+  glBindTexture(GL_TEXTURE_2D, over ? over : nothing);
+  glActiveTexture(GL_TEXTURE0);
 
   // ---- the sky: a dome around the eye, coloured at its vertices for the hour
   if (fabsf(view->hour - sky_hour) > 0.004f) {

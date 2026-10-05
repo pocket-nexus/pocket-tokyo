@@ -20,6 +20,8 @@ crate-type = ["staticlib"]
 # The Cortex-A8's VFP has a square root instruction, and is not pipelined: doubles cost more than twice singles.
 tokyo-sim = { path = "../../crates/tokyo-sim", default-features = false, features = ["hw-sqrt", "single-float"] }
 tokyo-pack = { path = "../../crates/tokyo-pack", default-features = false }
+# The flow around the flight, and the interface's channel as the C symbols PocketJS's guest driver calls (svcwire.h).
+tokyo-interface = { path = "../../crates/tokyo-interface", default-features = false, features = ["wire"] }
 # The Pocket3D title card's frames: this device has no frame buffer a CPU writes, so the shell shows
 # them through a texture (`tk_card`).
 pocket3d-title = { path = "../../vendor/pocketjs/engine/pocket3d/crates/pocket3d-title" }

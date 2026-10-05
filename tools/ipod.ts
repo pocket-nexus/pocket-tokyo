@@ -2,19 +2,22 @@
 /**
  * Pocket Tokyo on the iPod touch 4: cook, build, install, drive and measure.
  * PocketJS supplies the pinned iOS 6 sysroot, the startup objects, the
- * MobileInstallation transaction and the app icon. The app is the C in
- * ipod/src and the Rust core in ipod/core (the 3DS core's source).
+ * MobileInstallation transaction, the app icon, and the interface's runtime:
+ * its UI core (with the OpenGL ES 2 backend), QuickJS and the guest driver.
+ * The app is the C in ipod/src, the Rust core in ipod/core (the 3DS core's
+ * source) and the interface in ui/.
  *
  *   bun tools/ipod.ts cook [--area shiba]     the city for profiles/ipod60.json → .pocket-build/city/<area>/ipod60/city.pack
  *   bun tools/ipod.ts build | package         the app bundle (and its .ipa) → .pocket-build/ipod/
  *   bun tools/ipod.ts deploy                  build, then install through MobileInstallation
- *   bun tools/ipod.ts native [--pack]         build, then replace the installed executable (and the pack)
+ *   bun tools/ipod.ts native [--pack]         build, then replace the installed executable and interface (and the pack)
  *   bun tools/ipod.ts launch                  start it and wait for its first status
  *   bun tools/ipod.ts status
- *   bun tools/ipod.ts ctl "tour=0 hour=19"    words for the shell and for the flight (see ipod/src/main.c)
- *   bun tools/ipod.ts capture [--out PNG]     the frame as presented
+ *   bun tools/ipod.ts ctl "ui=fly hour=19"    words for the shell, the flow and the flight (see ipod/src/main.c)
+ *   bun tools/ipod.ts capture [--out PNG]     the frame as presented, interface and all
  *   bun tools/ipod.ts title [--out PNG]       launches, and brings back the Pocket3D title card's held frame
- *   bun tools/ipod.ts bench [--seconds 150] [--ctl "budget=30000"]   the tour's frame timings → .pocket-build/validation/ipod/
+ *   bun tools/ipod.ts reset                   stops the app and removes what it kept (the settings)
+ *   bun tools/ipod.ts bench [--seconds 150] [--ctl "budget=30000"]   the tour's frame timings, the instruments over it → .pocket-build/validation/ipod/
  *
  * The device is the one connected iPod4,1 (or POCKETJS_IPODTOUCH4_UDID), over
  * a USB tunnel to its SSH server.
@@ -24,8 +27,9 @@ import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, write
 import { createServer } from "node:net";
 import { join, resolve } from "node:path";
 import { IPOD_INSTALLER, parseInstalledIPodApp, shellQuote, userDeploymentScript } from "../vendor/pocketjs/tools/ipodtouch4-installation";
-import { IPODTOUCH4_TOOLCHAIN, inspectIPodTouch4Toolchain, ipodtouch4CacheRoot, ipodtouch4CsuPath, ipodtouch4SysrootPath } from "../vendor/pocketjs/tools/ipodtouch4-toolchain";
+import { IPODTOUCH4_TOOLCHAIN, inspectIPodTouch4Toolchain, ipodtouch4CacheRoot, ipodtouch4CsuPath, ipodtouch4QuickJsPath, ipodtouch4SysrootPath } from "../vendor/pocketjs/tools/ipodtouch4-toolchain";
 import { POCKET3D_ICON } from "../vendor/pocketjs/tools/pocket3d-icon.ts";
+import { compileInterface } from "./ui.ts";
 
 const root = resolve(import.meta.dir, "..");
 const args = Bun.argv.slice(2);
@@ -54,10 +58,11 @@ function cook() {
     "--profile", "profiles/ipod60.json", "--area", `areas/${area}.json`]));
 }
 
-function build() {
+async function build() {
   const toolchain = inspectIPodTouch4Toolchain();
-  if (!toolchain.sysroot || !toolchain.csu) throw new Error("no iPod touch 4 toolchain: run `bun ipodtouch4 doctor` in vendor/pocketjs");
+  if (!toolchain.sysroot || !toolchain.csu || !toolchain.quickjs) throw new Error("no iPod touch 4 toolchain: run `bun ipodtouch4 doctor` in vendor/pocketjs");
   if (!existsSync(pack)) throw new Error("the city is not cooked for the iPod: bun tools/ipod.ts cook");
+  const ui = await compileInterface("ipod", area);
   const objects = join(out, "native");
   rmSync(bundle, { recursive: true, force: true });
   mkdirSync(objects, { recursive: true });
@@ -67,14 +72,21 @@ function build() {
   const rustup = (tool: string) => run(["rustup", "which", "--toolchain", rust, tool]);
   const target = join(pocket, "hosts/ipodtouch4/armv7-apple-ios.json");
 
-  // The flight and what a frame draws, behind core.h, with the title card's frames.
-  run([rustup("cargo"), "build", "--release", "--target", target, "-Z", "json-target-spec", "-Z", "build-std=core,alloc,compiler_builtins"], join(root, "ipod/core"), undefined,
-    // (cortex-a8: scalar float goes through NEON; its VFP unit is not pipelined)
-    { RUSTC: rustup("rustc"), CARGO_TARGET_DIR: join(out, "core"), IPHONEOS_DEPLOYMENT_TARGET: "6.0", RUSTFLAGS: "-C target-cpu=cortex-a8" });
+  const cargo = (directory: string, targetDirectory: string, extra: string[]) =>
+    run([rustup("cargo"), "build", "--release", "--target", target, "-Z", "json-target-spec", ...extra], directory, undefined,
+      { RUSTC: rustup("rustc"), CARGO_TARGET_DIR: targetDirectory, IPHONEOS_DEPLOYMENT_TARGET: "6.0" });
+
+  // The flight, its flow and what a frame draws, behind core.h, with the title card's frames. It also answers the guest's service wire.
+  cargo(join(root, "ipod/core"), join(out, "core"), ["-Z", "build-std=core,alloc,compiler_builtins"]);
+  // The interface's runtime, from PocketJS: the UI core as a static library
+  // (ES 2 backend; PocketJS's own iPod host builds the ES 1.1 one), QuickJS,
+  // and the driver that runs the guest.
+  cargo(join(pocket, "engine/ui-cabi"), join(out, "ui-core"), ["--locked", "--no-default-features", "--features", "bare-platform",
+    "-Z", "build-std=core,alloc,compiler_builtins", "-Z", "build-std-features=compiler-builtins-mem"]);
 
   const sources = ["ipod/src/main.c", "ipod/src/render.c", "ipod/src/render.h", "n3ds/src/core.h"];
-  const library = join(out, "core", "armv7-apple-ios/release/libtokyo_ipod_core.a");
-  const build = createHash("sha256").update([...sources.map((f) => join(root, f)), library, pack].map(sha).join()).digest("hex").slice(0, 12);
+  const libraries = [join(out, "core", "armv7-apple-ios/release/libtokyo_ipod_core.a"), join(out, "ui-core", "armv7-apple-ios/release/libpocketjs_symbian_core.a")];
+  const build = createHash("sha256").update([...sources.map((f) => join(root, f)), ...libraries, join(ui.directory, "tokyo.js"), join(ui.directory, "tokyo.pak"), pack].map(sha).join()).digest("hex").slice(0, 12);
   const compile = (source: string, extra: string[] = []) => {
     const object = join(objects, source.replace(/[^A-Za-z0-9]/g, "_") + ".o");
     // cortex-a8: scalar float goes through NEON (its VFP unit is not pipelined).
@@ -94,9 +106,19 @@ function build() {
       "-e", "start", "-o", output, ...boot, ...inputs, ...frameworks.flatMap((f) => ["-framework", f]), "-lobjc", "-lSystem", "-lgcc_s.1"]);
     run(["chmod", "755", output]);
   };
-  const strict = ["-Wall", "-Wextra", "-Werror", `-DTOKYO_BUILD="${build}"`, ...(option("--budget") ? [`-DBUDGET=${option("--budget")}`] : [])];
+  const quickjs = join(ipodtouch4QuickJsPath(), "libquickjs-sys/embed/quickjs");
+  const includes = ["-I", join(pocket, "engine/quickjs-c"), "-I", join(pocket, "engine/ui-cabi/include"), "-I", join(pocket, "contracts/generated"),
+    "-I", join(pocket, "hosts/ios-legacy"), "-I", join(pocket, "hosts/shared"), "-isystem", quickjs];
+  const guest = [
+    ...["quickjs.c", "cutils.c", "dtoa.c", "libregexp.c", "libunicode.c"].map((f) => compile(join(quickjs, f), ["-I", quickjs, "-funsigned-char", "-fwrapv", `-DCONFIG_VERSION="${IPODTOUCH4_TOOLCHAIN.compiler.quickJsVersion}"`])),
+    // The guest's service ops go to the svcwire_* functions, which the core library answers in the process.
+    compile(join(pocket, "engine/quickjs-c/pocket_runtime.c"), [...includes, "-DPOCKET_SVC_WIRE", `-DPOCKETJS_TARGET_ID="${ui.inputs.target}"`,
+      `-DPOCKETJS_HOST_ABI=${ui.inputs.hostAbi}`, `-DPOCKET_RASTER_DENSITY=${ui.inputs.viewport.rasterDensity}`]),
+    compile(join(pocket, "hosts/ios-legacy/compat.c")),
+  ];
+  const strict = ["-Wall", "-Wextra", "-Werror", `-DTOKYO_BUILD="${build}"`, ...(option("--budget") ? [`-DBUDGET=${option("--budget")}`] : []), ...includes];
   const executable = join(bundle, executableName);
-  link(executable, [...["ipod/src/main.c", "ipod/src/render.c"].map((f) => compile(join(root, f), strict)), compile(join(pocket, "hosts/ios-legacy/compat.c")), library],
+  link(executable, [...["ipod/src/main.c", "ipod/src/render.c"].map((f) => compile(join(root, f), strict)), ...guest, libraries[0], "-force_load", libraries[1]],
     ["UIKit", "Foundation", "QuartzCore", "OpenGLES"]);
   run(["ldid", "-S", executable]);
   link(join(out, "installer"), [compile(join(pocket, "hosts/ipodtouch4/installer.c"))], ["Foundation"]);
@@ -118,6 +140,7 @@ function build() {
   // SpringBoard's icon is the Pocket3D icon from PocketJS, at both sizes, as the files are.
   cpSync(POCKET3D_ICON.ios, join(bundle, "Icon.png"));
   cpSync(POCKET3D_ICON.ios2x, join(bundle, "Icon@2x.png"));
+  for (const file of ["tokyo.js", "tokyo.pak"]) cpSync(join(ui.directory, file), join(bundle, file));
   cpSync(pack, join(bundle, "city.pack"));
   rmSync(join(out, "PocketTokyo.ipa"), { force: true });
   // (the pack is texels and vertices: storing it takes the time compressing it would, and installs as fast)
@@ -218,9 +241,9 @@ async function launch(d: Device) {
 }
 
 if (command === "cook") cook();
-else if (command === "build" || command === "package") build();
+else if (command === "build" || command === "package") await build();
 else if (command === "deploy") {
-  build();
+  await build();
   await device((d) => {
     const remote = `/private/var/tmp/tokyo-${randomBytes(8).toString("hex")}`, ipa = join(out, "PocketTokyo.ipa");
     d.ssh(`mkdir -p ${remote} /var/root/Library/PocketJS`);
@@ -233,11 +256,11 @@ else if (command === "deploy") {
     console.log(d.ssh(`chmod 700 ${remote}/installer; mv ${remote}/installer ${IPOD_INSTALLER}; ${IPOD_INSTALLER} lock ${shellQuote(bundleId)} ${remote}/deploy.sh; rm -rf ${remote}`));
   });
 } else if (command === "native") {
-  // Replaces the installed executable, and with --pack the city.
-  build();
+  // Replaces the installed executable and interface, and with --pack the city.
+  await build();
   await device((d) => {
     d.ssh(`killall ${executableName} 2>/dev/null; true`);
-    if (args.includes("--pack")) d.push(join(bundle, "city.pack"), `${d.path()}/city.pack`);
+    for (const file of ["tokyo.js", "tokyo.pak", ...(args.includes("--pack") ? ["city.pack"] : [])]) d.push(join(bundle, file), `${d.path()}/${file}`);
     d.push(join(bundle, executableName), `${d.path()}/${executableName}.new`);
     const digest = d.ssh(`cd ${shellQuote(d.path())} && chmod 755 ${executableName}.new && mv ${executableName}.new ${executableName} && openssl dgst -sha256 ${executableName}`);
     if (!digest.endsWith(sha(join(bundle, executableName)))) throw new Error("the installed executable differs");
@@ -255,14 +278,20 @@ else if (command === "title") await device(async (d) => {
   await launch(d);
   picture(d, "title.rgba", resolve(option("--out", join(validation, "title.png"))));
 });
+else if (command === "reset") await device((d) => {
+  // As after a first install: the app stopped, nothing kept from earlier runs (the settings).
+  const home = d.tmp().replace(/\/tmp$/, "");
+  d.ssh(`killall ${executableName} 2>/dev/null; rm -f ${shellQuote(home + "/Documents/interface.json")} ${shellQuote(home + "/tmp")}/*; true`);
+  console.log(d.ssh(`ls -la ${shellQuote(home + "/Documents")} ${shellQuote(home + "/tmp")}`));
+});
 else if (command === "bench") {
-  // The tour from its start. The device measures the window itself
+  // The tour from its start, as a flight: the instruments stand over it. The device measures the window itself
   // (`mark=`): a status read over SSH costs its one core a few frames, so
   // nothing is asked until it is done.
   const seconds = Number(option("--seconds", "150"));
   await device(async (d) => {
     await waitForScreen(d);
-    const first = await control(d, `tour=1 restart=1 view=off ${option("--ctl")} mark=${seconds}`.replace(/ +/g, " "));
+    const first = await control(d, `mode=flight tour=1 restart=1 view=off ${option("--ctl")} mark=${seconds}`.replace(/ +/g, " "));
     if (first.stage !== "running") throw new Error(`the device is not flying (stage ${first.stage})`);
     await Bun.sleep((seconds + 4) * 1000);
     const s = status(d);
@@ -271,11 +300,12 @@ else if (command === "bench") {
     if (!w.done) throw new Error("the window did not finish: is the app on the screen?");
     const summary = { seconds: w.seconds, frames: w.frames, lateFrames: w.late, lateShare: w.late / Math.max(w.frames, 1), averageFrameMs: (w.seconds * 1000) / w.frames, fps: w.frames / w.seconds,
       worstFrameMs: w.worstMs, triangles: { min: w.minTris, mean: w.meanTris, max: w.maxTris }, draws: { mean: w.meanDraws, max: w.maxDraws }, meanMs: w.meanMs,
-      governor: s.governor, reach: s.reach, control: option("--ctl") };
+      guest: { running: s.guest.running, turnsPerSecond: w.turns / w.seconds, redrawsPerSecond: w.redraws / w.seconds, turnMs: w.turnMs, redrawMs: w.redrawMs },
+      residentBytes: s.residentBytes, governor: s.governor, reach: s.reach, control: option("--ctl") };
     const directory = join(validation, `bench-${new Date().toISOString().replace(/[:.]/g, "-")}`);
     mkdirSync(directory, { recursive: true });
     writeFileSync(join(directory, "device.json"), JSON.stringify({ summary, identity: { device: "ipod:iPod4,1", build: s.build }, status: s }, null, 1));
     console.log(join(directory, "device.json"));
     console.log(JSON.stringify(summary, null, 1));
   });
-} else throw new Error("usage: cook | build | package | deploy | native [--pack] | launch | status | ctl WORDS | capture [--out PNG] [--ctl WORDS] | title [--out PNG] | bench [--seconds N] [--ctl WORDS]");
+} else throw new Error("usage: cook | build | package | deploy | native [--pack] | launch | status | ctl WORDS | capture [--out PNG] [--ctl WORDS] | title [--out PNG] | reset | bench [--seconds N] [--ctl WORDS]");

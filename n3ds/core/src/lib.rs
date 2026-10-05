@@ -55,6 +55,13 @@ const SCREEN: (f32, &str) = (400.0 / 240.0, "3ds");
 #[cfg(target_vendor = "apple")]
 const SCREEN: (f32, &str) = (480.0 / 320.0, "ipod");
 
+/// Frames between two lines of the numbers in flight: 15 lines a second at the 3DS's 30 frames, 12 at the
+/// iPod touch's 60 (each line there is a redraw of the interface's texture).
+#[cfg(not(target_vendor = "apple"))]
+const NUMBERS_EVERY: u32 = 2;
+#[cfg(target_vendor = "apple")]
+const NUMBERS_EVERY: u32 = 5;
+
 /// A slot, as the host's reading thread sees it: it reads `size` bytes at `offset` of the pack for a slot that
 /// is `WANTED` and sets it `READY`.
 #[repr(C)]
@@ -209,9 +216,8 @@ pub unsafe extern "C" fn tk_init(p: *const Pack, budget: u32) -> *const c_char {
     let place: String = core::str::from_utf8(meta).ok().and_then(|m| m.split("\"name\":\"").nth(1)).and_then(|m| m.split('"').next()).unwrap_or("Tokyo").into();
     let mut flight = Flight::new(city.view, city.hour, tour, budget, (600.0, 1600.0), 2);
     flight.clearance = 30.0;
-    // The numbers in flight 15 times a second: every other frame at this machine's pace.
     let mut session = Session::new();
-    session.numbers_every = 2;
+    session.numbers_every = NUMBERS_EVERY;
     *core::ptr::addr_of_mut!(APP) = Some(App {
         flight,
         session,

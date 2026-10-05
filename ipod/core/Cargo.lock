@@ -16,10 +16,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "tokyo-interface"
+version = "0.1.0"
+dependencies = [
+ "libm",
+ "tokyo-sim",
+]
+
+[[package]]
 name = "tokyo-ipod-core"
 version = "0.1.0"
 dependencies = [
  "pocket3d-title",
+ "tokyo-interface",
  "tokyo-pack",
  "tokyo-sim",
 ]
