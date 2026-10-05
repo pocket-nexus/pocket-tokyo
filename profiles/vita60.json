@@ -1,0 +1,13 @@
+{
+  "name": "vita60",
+  "cells": 4,
+  "ground": { "block": 1024, "far": 512, "floor": 8 },
+  "terrain": { "error": [0.5, 4.0], "stride": [4, 32], "skirt": [4.0, 20.0] },
+  "prisms": [
+    { "cell": 1, "cap": 4.0, "minArea": 25, "eps": 1.25, "minHeight": 2.0, "smooth": 2 },
+    { "cell": 4, "cap": 10.0, "minArea": 200, "eps": 3.2, "minHeight": 14, "smooth": 1 }
+  ],
+  "solids": { "error": [0.15, 1.2], "minSize": [1.2, 7.0] },
+  "facade": { "mips": 6 },
+  "heights": { "step": 2.0, "unit": 0.0078125 }
+}

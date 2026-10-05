@@ -1,0 +1,18 @@
+[package]
+name = "tokyo-sim"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "What moves in Pocket Tokyo, the same on every device: the camera, the clock and the sun, the traffic"
+
+[features]
+default = ["std"]
+# Without `std` the crate needs only `core` and `alloc` (the PSP build).
+std = []
+# The FPU's square root instead of libm's loop (the same bits; needs a nightly compiler).
+hw-sqrt = []
+# Transcendentals that never use f64, for an FPU without doubles (the PSP). Not bit-identical to libm.
+single-float = []
+
+[dependencies]
+libm = "0.2"
