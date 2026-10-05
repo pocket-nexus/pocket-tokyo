@@ -21,6 +21,12 @@ pub fn perspective(fov_y_deg: f32, aspect: f32, near: f32, far: f32) -> Mat4 {
     [f / aspect, 0.0, 0.0, 0.0, 0.0, f, 0.0, 0.0, 0.0, 0.0, a, a * near, 0.0, 0.0, -1.0, 0.0]
 }
 
+/// The same frustum with clip depth from `-w` at `near` to `w` at `far` (the PSP's GE, the PICA200).
+pub fn perspective_gl(fov_y_deg: f32, aspect: f32, near: f32, far: f32) -> Mat4 {
+    let f = 1.0 / tan(fov_y_deg.to_radians() * 0.5);
+    [f / aspect, 0.0, 0.0, 0.0, 0.0, f, 0.0, 0.0, 0.0, 0.0, (far + near) / (near - far), 2.0 * far * near / (near - far), 0.0, 0.0, -1.0, 0.0]
+}
+
 /// View matrix for an eye looking along the unit vector `look`, rolled about it.
 pub fn view(eye: V3, look: V3, roll: f32) -> Mat4 {
     let right = look.cross(V3::UP).norm_or(V3 { x: 1.0, y: 0.0, z: 0.0 });

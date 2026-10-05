@@ -9,12 +9,15 @@
 //! shadows.
 
 mod buildings;
+mod card;
 mod city;
 mod geom;
+mod handheld;
 mod heights;
 mod ir;
 mod prisms;
 mod simplify;
+mod target;
 mod terrain;
 mod tex;
 
@@ -27,7 +30,8 @@ use sha2::{Digest, Sha256};
 use std::hash::Hash;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
-use tokyo_pack::{self as pack, kind, Batch, Block, Cell, City, Draws, GroundLevel, Region, SolidVertex, TopVertex, WallVertex, LODS, REGION_BLOCKS, SECTORS};
+use target::{psp565, store, Raw, Target};
+use tokyo_pack::{self as pack, flag, kind, Batch, Block, Cell, City, Draws, GroundLevel, NearCell, Region, SolidVertex, TopVertex, WallVertex, LODS, SECTORS};
 
 /// Heights are stored over this range (metres above Tokyo Peil).
 const Y0: f32 = -16.0;
@@ -160,9 +164,9 @@ fn chunks<T: Copy + Eq + Hash, S>(tris: &[S], vertex: impl Fn(&S) -> ([T; 3], [P
 struct Out {
     batches: Vec<Batch>,
     spans: Vec<u32>,
-    vtop: Vec<TopVertex>,
-    vwal: Vec<WallVertex>,
-    vsol: Vec<SolidVertex>,
+    vtop: Vec<u8>,
+    vwal: Vec<u8>,
+    vsol: Vec<u8>,
     idx: Vec<u16>,
     /// Triangles by level of detail and program.
     stats: [[usize; 3]; LODS],
@@ -196,28 +200,66 @@ struct Frame<'a> {
     side: f32,
     /// The city as heights, for how much of the sky each vertex sees.
     sky: &'a heights::Heights,
+    target: Target,
+}
+
+/// A signed 16-bit position over a span: the handhelds' vertex formats have no unsigned one.
+fn s16(q: u16) -> [u8; 2] {
+    ((q as i32 - 32768) as i16).to_le_bytes()
 }
 
 impl Frame<'_> {
-    fn top(&self, t: &TopTri) -> ([TopVertex; 3], [P3; 3]) {
-        ([0, 1, 2].map(|k| TopVertex { pos: [q_in(t.p[k][0], self.x0, self.side), qy(t.p[k][1]), q_in(t.p[k][2], self.z0, self.side)], ao: self.sky.open(t.p[k], t.n[k]), pad: 0, normal: n8(t.n[k]), pad2: 0 }), t.p)
+    fn top(&self, t: &TopTri) -> ([Raw; 3], [P3; 3]) {
+        let v = [0, 1, 2].map(|k| {
+            let pos = [q_in(t.p[k][0], self.x0, self.side), qy(t.p[k][1]), q_in(t.p[k][2], self.z0, self.side)];
+            let (ao, n) = (self.sky.open(t.p[k], t.n[k]), n8(t.n[k]));
+            match self.target {
+                Target::Vita => Raw::of(&TopVertex { pos, ao, pad: 0, normal: n, pad2: 0 }),
+                // The GE: colour, position. Its texture matrix makes the coordinates in the picture from x and z,
+                // and every top is lit as one group.
+                Target::Psp => Raw::from(&[&psp565([ao; 3]), &s16(pos[0]), &s16(pos[1]), &s16(pos[2])]),
+                Target::Pica => Raw::from(&[&s16(pos[0]), &s16(pos[1]), &s16(pos[2]), &[0, 0], &[n[0] as u8, n[1] as u8, n[2] as u8, ao]]),
+            }
+        });
+        (v, t.p)
     }
-    fn wall(&self, w: &WallTri) -> ([WallVertex; 3], [P3; 3]) {
-        (
-            [0, 1, 2].map(|k| WallVertex {
-                pos: [q_wide(w.p[k][0], self.x0, self.side), qy(w.p[k][1]), q_wide(w.p[k][2], self.z0, self.side)],
-                ao: self.sky.open(w.p[k], w.n),
-                gain: w.gain,
-                normal: n8(w.n),
-                late: w.late,
-                color: [w.color[0], w.color[1], w.color[2], 0],
-                uv: [(w.uv[k][0] * 32767.0).round() as i16, (w.uv[k][1] / pack::FACADE_V * 32767.0).round().clamp(-32767.0, 32767.0) as i16],
-            }),
-            w.p,
-        )
+    fn wall(&self, w: &WallTri) -> ([Raw; 3], [P3; 3]) {
+        let v = [0, 1, 2].map(|k| {
+            let pos = [q_wide(w.p[k][0], self.x0, self.side), qy(w.p[k][1]), q_wide(w.p[k][2], self.z0, self.side)];
+            let (ao, n) = (self.sky.open(w.p[k], w.n), n8(w.n));
+            let uv = [(w.uv[k][0] * 32767.0).round() as i16, (w.uv[k][1] / pack::FACADE_V * 32767.0).round().clamp(-32767.0, 32767.0) as i16];
+            match self.target {
+                Target::Vita => Raw::of(&WallVertex { pos, ao, gain: w.gain, normal: n, late: w.late, color: [w.color[0], w.color[1], w.color[2], 0], uv }),
+                Target::Psp => {
+                    // (v: repeats of the picture from -FACADE_V to FACADE_V over the unsigned range)
+                    let v16 = ((w.uv[k][1] / pack::FACADE_V * 0.5 + 0.5).clamp(0.0, 1.0) * 65535.0).round() as u16;
+                    let tint = [0, 1, 2].map(|c| (w.color[c] as u16 * ao as u16 / 255) as u8);
+                    Raw::from(&[&(uv[0] as u16).to_le_bytes(), &v16.to_le_bytes(), &psp565(tint), &s16(pos[0]), &s16(pos[1]), &s16(pos[2])])
+                }
+                Target::Pica => Raw::from(&[&s16(pos[0]), &s16(pos[1]), &s16(pos[2]), &[0, 0], &[n[0] as u8, n[1] as u8, n[2] as u8, ao], &[w.color[0], w.color[1], w.color[2], w.gain], &uv[0].to_le_bytes(), &uv[1].to_le_bytes()]),
+            }
+        });
+        (v, w.p)
     }
-    fn solid(&self, s: &SolidTri) -> ([SolidVertex; 3], [P3; 3]) {
-        ([0, 1, 2].map(|k| SolidVertex { pos: [q_wide(s.p[k][0], self.x0, self.side), qy(s.p[k][1]), q_wide(s.p[k][2], self.z0, self.side)], ao: self.sky.open(s.p[k], s.n[k]), pad: 0, normal: n8(s.n[k]), pad2: 0, color: s.color }), s.p)
+    /// A card's face: a wall's vertex, lit as the open sky lights it.
+    fn card(&self, w: &WallTri) -> ([Raw; 3], [P3; 3]) {
+        let open = heights::Heights { x0: 0.0, z0: 0.0, step: 1.0, w: 1, h: 1, data: vec![f32::NEG_INFINITY] };
+        Frame { sky: &open, ..*self }.wall(w)
+    }
+    fn solid(&self, s: &SolidTri) -> ([Raw; 3], [P3; 3]) {
+        let v = [0, 1, 2].map(|k| {
+            let pos = [q_wide(s.p[k][0], self.x0, self.side), qy(s.p[k][1]), q_wide(s.p[k][2], self.z0, self.side)];
+            let (ao, n) = (self.sky.open(s.p[k], s.n[k]), n8(s.n[k]));
+            match self.target {
+                Target::Vita => Raw::of(&SolidVertex { pos, ao, pad: 0, normal: n, pad2: 0, color: s.color }),
+                Target::Psp => {
+                    let c = [0, 1, 2].map(|c| (s.color[c] as u16 * ao as u16 / 255) as u8);
+                    Raw::from(&[&psp565(c), &s16(pos[0]), &s16(pos[1]), &s16(pos[2])])
+                }
+                Target::Pica => Raw::from(&[&s16(pos[0]), &s16(pos[1]), &s16(pos[2]), &[0, 0], &[n[0] as u8, n[1] as u8, n[2] as u8, ao], &s.color]),
+            }
+        });
+        (v, s.p)
     }
 }
 
@@ -258,20 +300,26 @@ fn run() -> Result<(), String> {
     let input = PathBuf::from(arg("--in").ok_or("--in <CityIR directory>")?);
     let out_dir = PathBuf::from(arg("--out").ok_or("--out <directory>")?);
     let profile = read_json(Path::new(&arg("--profile").ok_or("--profile <file>")?))?;
+    let target = Target::of(profile["target"].as_str().unwrap_or("vita"))?;
     let manifest = ir::manifest(&input)?;
     let facade = Facade::from_json(&read_json(&input.join("facade.json"))?)?;
     let tile = manifest.tile;
     let f = |v: &Value, k: &str, i: usize, d: f32| v[k][i].as_f64().map(|x| x as f32).unwrap_or(d);
     let num = |v: &Value, k: &str, d: f32| v[k].as_f64().map(|x| x as f32).unwrap_or(d);
-    // The tile grid, widened to whole regions: a region is REGION_BLOCKS blocks, a block BLOCK_TILES tiles a side.
-    let per_region = BLOCK_TILES * REGION_BLOCKS as i32;
+    // The tile grid, widened to whole regions: a region is `region` blocks, a block BLOCK_TILES tiles a side.
+    let region_blocks = profile["region"].as_u64().unwrap_or(2) as usize;
+    let per_region = BLOCK_TILES * region_blocks as i32;
+    // A machine without fragment programs lights a group of faces with one colour: its solids are ordered by
+    // sector as walls are. A handheld reads each cell's near level by itself.
+    let faced = target == Target::Psp;
+    let streamed = target != Target::Vita;
     let floor_to = |v: i32| v.div_euclid(per_region) * per_region;
     let (tx0, tz0) = (floor_to(manifest.tiles.iter().map(|t| t.x).min().ok_or("no tiles")?), floor_to(manifest.tiles.iter().map(|t| t.z).min().unwrap()));
     let (tx1, tz1) = (floor_to(manifest.tiles.iter().map(|t| t.x).max().unwrap()) + per_region - 1, floor_to(manifest.tiles.iter().map(|t| t.z).max().unwrap()) + per_region - 1);
     let (nx, nz) = ((tx1 - tx0 + 1) as usize, (tz1 - tz0 + 1) as usize);
     let slot = |t: (i32, i32)| -> Option<usize> { (t.0 >= tx0 && t.0 <= tx1 && t.1 >= tz0 && t.1 <= tz1).then(|| (t.1 - tz0) as usize * nx + (t.0 - tx0) as usize) };
     let (bnx, bnz) = (nx / BLOCK_TILES as usize, nz / BLOCK_TILES as usize);
-    let (rnx, rnz) = (bnx / REGION_BLOCKS, bnz / REGION_BLOCKS);
+    let (rnx, rnz) = (bnx / region_blocks, bnz / region_blocks);
     let block = tile * BLOCK_TILES as f32;
     let cells = profile["cells"].as_u64().unwrap_or(4) as usize;
 
@@ -363,6 +411,11 @@ fn run() -> Result<(), String> {
         return Err(format!("the profile needs {} prism levels", LODS - 1));
     }
     let coarse: Vec<prisms::RoofGrid> = rules.iter().map(|(cell, _)| roofs.coarser(*cell)).collect();
+    // A machine that cannot draw the mesher's own triangles near the eye takes prisms there too.
+    let near_rule: Option<(prisms::RoofGrid, prisms::Rules)> = profile["near"].as_object().map(|_| {
+        let p = &profile["near"];
+        (roofs.coarser(p["cell"].as_u64().unwrap_or(1) as usize), prisms::Rules { cap: num(p, "cap", 3.0), min_area: num(p, "minArea", 12.0), eps: num(p, "eps", 0.75), min_height: num(p, "minHeight", 1.5), smooth: p["smooth"].as_u64().unwrap_or(1) as u32 })
+    });
     println!("cook: {} buildings, roofs drawn in {:.1} s", all.len(), t0.elapsed().as_secs_f32());
 
     // ---- every triangle to the tile it lies in
@@ -370,6 +423,7 @@ fn run() -> Result<(), String> {
     let mut present = vec![false; nx * nz];
     // Painted geometry by tile: the lattice tower as it is, and what may be simplified.
     let mut lattice: Vec<Vec<SolidTri>> = vec![Vec::new(); nx * nz];
+    let mut whole_lattice: Vec<SolidTri> = Vec::new();
     let mut painted: Vec<Vec<SolidTri>> = vec![Vec::new(); nx * nz];
     let mut crowns: Vec<Vec<SolidTri>> = vec![Vec::new(); nx * nz];
     let put_solid = |to: &mut Vec<Vec<SolidTri>>, s: &SolidTri| {
@@ -400,6 +454,7 @@ fn run() -> Result<(), String> {
         for s in &r.built.solids {
             put_solid(&mut lattice, s);
         }
+        whole_lattice.extend_from_slice(&r.built.solids);
         for s in &r.models {
             put_solid(&mut painted, s);
         }
@@ -502,13 +557,23 @@ fn run() -> Result<(), String> {
                 level.tops.extend(p.tops);
                 level.walls.extend(p.walls);
             }
+            if let Some((grid, rule)) = &near_rule {
+                let p = prisms::prisms(grid, &manifest.surface, x0, z0, tile, rule, &all, &facade);
+                out.near.tops = p.tops;
+                out.near.walls = p.walls;
+            }
             // Painted geometry: all of it near, less of it in the middle; far away it is in the region's picture.
             out.near.solids = simplify::solids(&painted[i], f(&profile["solids"], "error", 0, 0.15), f(&profile["solids"], "minSize", 0, 0.0));
             out.mid.solids = simplify::solids(&painted[i], f(&profile["solids"], "error", 1, 1.0), f(&profile["solids"], "minSize", 1, 0.0));
-            for level in [&mut out.near, &mut out.mid, &mut out.far] {
-                level.solids.extend_from_slice(&lattice[i]);
+            // (a handheld draws a lattice as a card)
+            if !streamed {
+                for level in [&mut out.near, &mut out.mid, &mut out.far] {
+                    level.solids.extend_from_slice(&lattice[i]);
+                }
             }
-            out.near.solids.extend_from_slice(&crowns[i]);
+            if near_rule.is_none() {
+                out.near.solids.extend_from_slice(&crowns[i]);
+            }
             out
         })
         .collect();
@@ -526,6 +591,10 @@ fn run() -> Result<(), String> {
             }
         }
         let TileOut { near, ground, mid, far } = s;
+        if near_rule.is_some() {
+            tiles[i].near.tops = near.tops;
+            tiles[i].near.walls = near.walls;
+        }
         tiles[i].near.solids = near.solids;
         tiles[i].ground = ground;
         tiles[i].mid = mid;
@@ -574,6 +643,11 @@ fn run() -> Result<(), String> {
     let mut regions = vec![Region::default(); rnx * rnz];
     let mut blocks = vec![Block::default(); bnx * bnz];
     let mut cell_table: Vec<Cell> = Vec::with_capacity(bnx * bnz * cells * cells);
+    // Handheld packs: per cell the bytes of its near level (top, wall and solid vertices, indices).
+    let mut near_parts: Vec<[Vec<u8>; 4]> = Vec::new();
+    // Bytes a cell's geometry may take: what a slot of the device holds, less the cell's picture.
+    let cell_room = profile["near"]["room"].as_u64().unwrap_or(u64::MAX) as usize;
+    let mut coarsened = 0;
     let range = |ys: &mut (f32, f32), b: &Bounds| {
         ys.0 = ys.0.min(b.min[1]);
         ys.1 = ys.1.max(b.max[1]);
@@ -588,29 +662,27 @@ fn run() -> Result<(), String> {
         };
         level.tops.sort_by_key(|t| cell_of(&t.p));
         level.walls.sort_by_key(|w| cell_of(&w.p) * (SECTORS + 1) + w.sector as usize);
-        level.solids.sort_by_key(|s| cell_of(&s.p));
+        let solid_group = |s: &SolidTri| if faced { cell_of(&s.p) * (SECTORS + 1) + city::solid_sector(&s.p) as usize } else { cell_of(&s.p) };
+        level.solids.sort_by_key(solid_group);
         let first = out.batches.len();
         for c in chunks(&level.tops, |t| frame.top(t)) {
-            let at = out.vtop.len();
-            out.vtop.extend_from_slice(&c.vertices);
+            let at = store(&mut out.vtop, &c.vertices);
             let group: Vec<usize> = c.source.iter().map(|&k| cell_of(&level.tops[k].p)).collect();
             out.batch(kind::TOP, at, c.vertices.len(), &c.bounds, &c.tris, Some((&group, cells * cells)));
             out.stats[lod][0] += c.tris.len();
             range(ys, &c.bounds);
         }
         for c in chunks(&level.walls, |w| frame.wall(w)) {
-            let at = out.vwal.len();
-            out.vwal.extend_from_slice(&c.vertices);
+            let at = store(&mut out.vwal, &c.vertices);
             let group: Vec<usize> = c.source.iter().map(|&k| cell_of(&level.walls[k].p) * (SECTORS + 1) + level.walls[k].sector as usize).collect();
             out.batch(kind::WALL, at, c.vertices.len(), &c.bounds, &c.tris, Some((&group, cells * cells * (SECTORS + 1))));
             out.stats[lod][1] += c.tris.len();
             range(ys, &c.bounds);
         }
         for c in chunks(&level.solids, |s| frame.solid(s)) {
-            let at = out.vsol.len();
-            out.vsol.extend_from_slice(&c.vertices);
-            let group: Vec<usize> = c.source.iter().map(|&k| cell_of(&level.solids[k].p)).collect();
-            out.batch(kind::SOLID, at, c.vertices.len(), &c.bounds, &c.tris, Some((&group, cells * cells)));
+            let at = store(&mut out.vsol, &c.vertices);
+            let group: Vec<usize> = c.source.iter().map(|&k| solid_group(&level.solids[k])).collect();
+            out.batch(kind::SOLID, at, c.vertices.len(), &c.bounds, &c.tris, Some((&group, cells * cells * if faced { SECTORS + 1 } else { 1 })));
             out.stats[lod][2] += c.tris.len();
             range(ys, &c.bounds);
         }
@@ -619,7 +691,7 @@ fn run() -> Result<(), String> {
     // The far level: a region's tiles together.
     for (r, region) in regions.iter_mut().enumerate() {
         let (rx, rz) = (r % rnx, r / rnx);
-        let frame = Frame { x0: (tx0 + rx as i32 * per_region) as f32 * tile, z0: (tz0 + rz as i32 * per_region) as f32 * tile, side: tile * per_region as f32, sky: &heights };
+        let frame = Frame { x0: (tx0 + rx as i32 * per_region) as f32 * tile, z0: (tz0 + rz as i32 * per_region) as f32 * tile, side: tile * per_region as f32, sky: &heights, target };
         let mut level = Level::default();
         for tz in 0..per_region as usize {
             for tx in 0..per_region as usize {
@@ -636,7 +708,7 @@ fn run() -> Result<(), String> {
     // The mid level by block and the near level by cell.
     for (b, record) in blocks.iter_mut().enumerate() {
         let (bx, bz) = (b % bnx, b / bnx);
-        let frame = Frame { x0: (tx0 + bx as i32 * BLOCK_TILES) as f32 * tile, z0: (tz0 + bz as i32 * BLOCK_TILES) as f32 * tile, side: block, sky: &heights };
+        let frame = Frame { x0: (tx0 + bx as i32 * BLOCK_TILES) as f32 * tile, z0: (tz0 + bz as i32 * BLOCK_TILES) as f32 * tile, side: block, sky: &heights, target };
         let side = block / cells as f32;
         let cell_of = |p: &[P3; 3]| -> usize {
             let cx = (((p[0][0] + p[1][0] + p[2][0]) / 3.0 - frame.x0) / side).floor().clamp(0.0, cells as f32 - 1.0) as usize;
@@ -669,29 +741,60 @@ fn run() -> Result<(), String> {
         let mut ys = (f32::INFINITY, f32::NEG_INFINITY);
         let mid = by_cell(&mut out, &mut mid, frame, 1, &mut ys);
         // ---- near, cell by cell
-        for level in &near {
+        for level in &mut near {
             let first = out.batches.len();
             let mut bounds = Bounds::new();
-            for c in chunks(&level.tops, |t| frame.top(t)) {
-                let at = out.vtop.len();
-                out.vtop.extend_from_slice(&c.vertices);
-                out.batch(kind::TOP, at, c.vertices.len(), &c.bounds, &c.tris, None);
-                out.stats[0][0] += c.tris.len();
-                bounds.add(&[c.bounds.min, c.bounds.max]);
+            if faced {
+                level.walls.sort_by_key(|w| w.sector);
             }
-            for c in chunks(&level.walls, |w| frame.wall(w)) {
-                let at = out.vwal.len();
-                out.vwal.extend_from_slice(&c.vertices);
-                out.batch(kind::WALL, at, c.vertices.len(), &c.bounds, &c.tris, None);
-                out.stats[0][1] += c.tris.len();
-                bounds.add(&[c.bounds.min, c.bounds.max]);
+            // A handheld reads a cell by itself, into a slot of a fixed size: its vertices and indices count from
+            // the cell's own start, and painted geometry that would not fit is simplified until it does.
+            let held = streamed.then(|| (std::mem::take(&mut out.vtop), std::mem::take(&mut out.vwal), std::mem::take(&mut out.vsol), std::mem::take(&mut out.idx)));
+            let before = (out.spans.len(), out.stats[0]);
+            for attempt in 0.. {
+                if faced {
+                    level.solids.sort_by_key(|s| city::solid_sector(&s.p));
+                }
+                bounds = Bounds::new();
+                for c in chunks(&level.tops, |t| frame.top(t)) {
+                    let at = store(&mut out.vtop, &c.vertices);
+                    out.batch(kind::TOP, at, c.vertices.len(), &c.bounds, &c.tris, None);
+                    out.stats[0][0] += c.tris.len();
+                    bounds.add(&[c.bounds.min, c.bounds.max]);
+                }
+                for c in chunks(&level.walls, |w| frame.wall(w)) {
+                    let at = store(&mut out.vwal, &c.vertices);
+                    let group: Vec<usize> = c.source.iter().map(|&k| level.walls[k].sector as usize).collect();
+                    out.batch(kind::WALL, at, c.vertices.len(), &c.bounds, &c.tris, faced.then_some((&group[..], SECTORS + 1)));
+                    out.stats[0][1] += c.tris.len();
+                    bounds.add(&[c.bounds.min, c.bounds.max]);
+                }
+                for c in chunks(&level.solids, |s| frame.solid(s)) {
+                    let at = store(&mut out.vsol, &c.vertices);
+                    let group: Vec<usize> = c.source.iter().map(|&k| city::solid_sector(&level.solids[k].p) as usize).collect();
+                    out.batch(kind::SOLID, at, c.vertices.len(), &c.bounds, &c.tris, faced.then_some((&group[..], SECTORS + 1)));
+                    out.stats[0][2] += c.tris.len();
+                    bounds.add(&[c.bounds.min, c.bounds.max]);
+                }
+                let bytes = out.vtop.len() + out.vwal.len() + out.vsol.len() + out.idx.len() * 2;
+                if !streamed || bytes <= cell_room || attempt >= 5 || level.solids.is_empty() {
+                    break;
+                }
+                // Over: the same cell again with its painted geometry twice as coarse.
+                let coarse = 2.0f32.powi(attempt + 1);
+                level.solids = simplify::solids(&level.solids, f(&profile["solids"], "error", 0, 0.15) * coarse, f(&profile["solids"], "minSize", 0, 0.0) * coarse);
+                coarsened += 1;
+                out.batches.truncate(first);
+                out.spans.truncate(before.0);
+                out.stats[0] = before.1;
+                out.vtop.clear();
+                out.vwal.clear();
+                out.vsol.clear();
+                out.idx.clear();
             }
-            for c in chunks(&level.solids, |s| frame.solid(s)) {
-                let at = out.vsol.len();
-                out.vsol.extend_from_slice(&c.vertices);
-                out.batch(kind::SOLID, at, c.vertices.len(), &c.bounds, &c.tris, None);
-                out.stats[0][2] += c.tris.len();
-                bounds.add(&[c.bounds.min, c.bounds.max]);
+            if let Some(h) = held {
+                let idx = std::mem::replace(&mut out.idx, h.3);
+                near_parts.push([std::mem::replace(&mut out.vtop, h.0), std::mem::replace(&mut out.vwal, h.1), std::mem::replace(&mut out.vsol, h.2), pack::slice_bytes(&idx).to_vec()]);
             }
             if bounds.min[1] <= bounds.max[1] {
                 range(&mut ys, &bounds);
@@ -704,12 +807,29 @@ fn run() -> Result<(), String> {
         *record = Block { y_min: ys.0 - 20.0, y_max: ys.1, mid, ..Default::default() };
     }
     drop(tiles);
-    println!("cook: {} draws, {} + {} + {} vertices, {} indices in {:.1} s", out.batches.len(), out.vtop.len(), out.vwal.len(), out.vsol.len(), out.idx.len(), t0.elapsed().as_secs_f32());
+    // ---- a handheld's lattice towers: a card each, in the frame of the block it stands in
+    let cards = if streamed { card::cards(&whole_lattice) } else { Vec::new() };
+    for c in &cards {
+        let (bx, bz) = ((((c.at[0] - tx0 as f32 * tile) / block) as usize).min(bnx - 1), (((c.at[1] - tz0 as f32 * tile) / block) as usize).min(bnz - 1));
+        let frame = Frame { x0: tx0 as f32 * tile + bx as f32 * block, z0: tz0 as f32 * tile + bz as f32 * block, side: block, sky: &heights, target };
+        for chunk in chunks(&c.faces, |w| frame.card(w)) {
+            let at = store(&mut out.vwal, &chunk.vertices);
+            out.batch(kind::CARD, at, chunk.vertices.len(), &chunk.bounds, &chunk.tris, None);
+            // (a card's `spans` is the block whose frame its vertices are in)
+            out.batches.last_mut().unwrap().spans = (bz * bnx + bx) as u32;
+        }
+    }
+    println!("cook: {} cards, {} cells with coarser painted geometry to fit", cards.len(), coarsened);
+    let sizes = target.sizes();
+    println!("cook: {} draws, {} + {} + {} vertices, {} indices in {:.1} s", out.batches.len(), out.vtop.len() / sizes[0], out.vwal.len() / sizes[1], out.vsol.len() / sizes[2], out.idx.len(), t0.elapsed().as_secs_f32());
 
-    // ---- pictures: one per block from its tiles' pictures, one per region from its tiles' far pictures
+    // ---- pictures
     let cache = tex::Cache::new(PathBuf::from(arg("--cache").unwrap_or(".pocket-build/cache/bc".into())));
     let floor = profile["ground"]["floor"].as_u64().unwrap_or(8) as usize;
-    let picture = |name: &str, first: (i32, i32), tiles_side: usize, size: usize| -> Result<Vec<(usize, Vec<u8>)>, String> {
+    let block_top = profile["ground"]["block"].as_u64().unwrap_or(1024) as usize;
+    let far_top = profile["ground"]["far"].as_u64().unwrap_or(512) as usize;
+    // A place's picture, composed of its tiles' pictures: `None` where the export has none.
+    let compose = |name: &str, first: (i32, i32), tiles_side: usize, size: usize| -> Result<Option<tex::Image>, String> {
         let part = size / tiles_side;
         let mut img = tex::Image::blank(size, size, [111, 110, 104]);
         let mut any = false;
@@ -727,46 +847,162 @@ fn run() -> Result<(), String> {
                 any = true;
             }
         }
-        let mut levels = Vec::new();
-        if !any {
-            // Open ground beyond the export: one flat level.
-            img = tex::Image::blank(floor, floor, [111, 110, 104]);
-        }
-        loop {
-            levels.push((img.w, cache.compress(&img, pack::tex_format::BC1)));
-            if img.w <= floor {
-                break;
-            }
-            img = img.half();
-        }
-        Ok(levels)
+        Ok(any.then_some(img))
     };
-    let block_top = profile["ground"]["block"].as_u64().unwrap_or(1024) as usize;
-    let far_top = profile["ground"]["far"].as_u64().unwrap_or(512) as usize;
-    let block_pictures: Vec<Vec<(usize, Vec<u8>)>> = (0..bnx * bnz).into_par_iter().map(|b| picture("top", (tx0 + (b % bnx) as i32 * BLOCK_TILES, tz0 + (b / bnx) as i32 * BLOCK_TILES), BLOCK_TILES as usize, block_top)).collect::<Result<_, _>>()?;
-    let region_pictures: Vec<Vec<(usize, Vec<u8>)>> = (0..rnx * rnz).into_par_iter().map(|r| picture("far", (tx0 + (r % rnx) as i32 * per_region, tz0 + (r / rnx) as i32 * per_region), per_region as usize, far_top)).collect::<Result<_, _>>()?;
+    let block_first = |b: usize| (tx0 + (b % bnx) as i32 * BLOCK_TILES, tz0 + (b / bnx) as i32 * BLOCK_TILES);
+    let region_first = |r: usize| (tx0 + (r % rnx) as i32 * per_region, tz0 + (r / rnx) as i32 * per_region);
     let mut glvl: Vec<GroundLevel> = Vec::new();
     let mut gtex: Vec<u8> = Vec::new();
-    let mut place = |levels: &[(usize, Vec<u8>)]| -> (u32, u32) {
-        let first = glvl.len() as u32;
-        for (w, bytes) in levels {
-            glvl.push(GroundLevel { offset: gtex.len() as u32, size: bytes.len() as u32, width: *w as u32, pad: 0 });
-            gtex.extend_from_slice(bytes);
+    let (mut facd, mut facn) = (Vec::new(), Vec::new());
+    let mut hpic: Vec<pack::HandPicture> = Vec::new();
+    let mut htex: Vec<u8> = Vec::new();
+    let mut ncel: Vec<NearCell> = Vec::new();
+    let mut near: Vec<u8> = Vec::new();
+    if target == Target::Vita {
+        let chain = |img: Option<tex::Image>| -> Vec<(usize, Vec<u8>)> {
+            // (open ground beyond the export: one flat level)
+            let mut img = img.unwrap_or_else(|| tex::Image::blank(floor, floor, [111, 110, 104]));
+            let mut levels = Vec::new();
+            loop {
+                levels.push((img.w, cache.compress(&img, pack::tex_format::BC1)));
+                if img.w <= floor {
+                    break;
+                }
+                img = img.half();
+            }
+            levels
+        };
+        let block_pictures: Vec<Vec<(usize, Vec<u8>)>> = (0..bnx * bnz).into_par_iter().map(|b| compose("top", block_first(b), BLOCK_TILES as usize, block_top).map(chain)).collect::<Result<_, _>>()?;
+        let region_pictures: Vec<Vec<(usize, Vec<u8>)>> = (0..rnx * rnz).into_par_iter().map(|r| compose("far", region_first(r), per_region as usize, far_top).map(chain)).collect::<Result<_, _>>()?;
+        let mut place = |levels: &[(usize, Vec<u8>)]| -> (u32, u32) {
+            let first = glvl.len() as u32;
+            for (w, bytes) in levels {
+                glvl.push(GroundLevel { offset: gtex.len() as u32, size: bytes.len() as u32, width: *w as u32, pad: 0 });
+                gtex.extend_from_slice(bytes);
+            }
+            (first, levels.len() as u32)
+        };
+        for (b, levels) in block_pictures.iter().enumerate() {
+            (blocks[b].ground_first, blocks[b].ground_levels) = place(levels);
         }
-        (first, levels.len() as u32)
-    };
-    for (b, levels) in block_pictures.iter().enumerate() {
-        (blocks[b].ground_first, blocks[b].ground_levels) = place(levels);
-    }
-    for (r, levels) in region_pictures.iter().enumerate() {
-        (regions[r].ground_first, regions[r].ground_levels) = place(levels);
-    }
-    let mips = profile["facade"]["mips"].as_u64().unwrap_or(6) as u32;
-    let facd = cache.chain(tex::load(&input.join("facade.day.png"))?, pack::tex_format::BC3, mips);
-    let facn = cache.chain(tex::load(&input.join("facade.night.png"))?, pack::tex_format::BC1, mips);
-    println!("cook: pictures in {:.1} s ({:.1} MB of ground)", t0.elapsed().as_secs_f32(), gtex.len() as f32 / 1e6);
+        for (r, levels) in region_pictures.iter().enumerate() {
+            (regions[r].ground_first, regions[r].ground_levels) = place(levels);
+        }
+        let mips = profile["facade"]["mips"].as_u64().unwrap_or(6) as u32;
+        facd = cache.chain(tex::load(&input.join("facade.day.png"))?, pack::tex_format::BC3, mips);
+        facn = cache.chain(tex::load(&input.join("facade.night.png"))?, pack::tex_format::BC1, mips);
+    } else {
+        // A handheld takes every picture as a day and night pair. A block's picture shows the structures the
+        // mid and far levels do not draw (the far pictures of the export); a cell's own picture, read with its
+        // near level, is the ground as the near level stands on it.
+        let lamp_at = |x: f32, z: f32| -> [f32; 3] {
+            let (fx, fz) = ((x - heights.x0) / heights.step - 0.5, (z - heights.z0) / heights.step - 0.5);
+            let (i, j) = (fx.floor(), fz.floor());
+            let (u, v) = (fx - i, fz - j);
+            let at = |i: f32, j: f32| -> [f32; 3] {
+                let (i, j) = ((i as isize).clamp(0, heights.w as isize - 1) as usize, (j as isize).clamp(0, heights.h as isize - 1) as usize);
+                if lamp_map[j * heights.w + i] == 0 {
+                    [0.0; 3]
+                } else {
+                    lamp_light[j * heights.w + i]
+                }
+            };
+            let (a, b, c, d) = (at(i, j), at(i + 1.0, j), at(i, j + 1.0), at(i + 1.0, j + 1.0));
+            [0, 1, 2].map(|k| (a[k] * (1.0 - u) + b[k] * u) * (1.0 - v) + (c[k] * (1.0 - u) + d[k] * u) * v)
+        };
+        let pair = |day: tex::Image, x0: f32, z0: f32, side: f32, most: usize| -> (Vec<u8>, usize, usize) {
+            let night = handheld::night_ground(&day, |u, v| lamp_at(x0 + u * side, z0 + v * side));
+            let w = day.w;
+            // (the ground's pictures leave half the palette to the device, for its shadows)
+            let (bytes, levels) = handheld::pair(target, day, night, most, 128);
+            (bytes, w, levels)
+        };
+        let block_pictures: Vec<(Vec<u8>, usize, usize)> = (0..bnx * bnz)
+            .into_par_iter()
+            .map(|b| {
+                let first = block_first(b);
+                compose("far", first, BLOCK_TILES as usize, block_top).map(|i| pair(i.unwrap_or_else(|| tex::Image::blank(16, 16, [111, 110, 104])), first.0 as f32 * tile, first.1 as f32 * tile, block, usize::MAX))
+            })
+            .collect::<Result<_, _>>()?;
+        for (bytes, w, levels) in &block_pictures {
+            hpic.push(pack::HandPicture { offset: htex.len() as u32, size: bytes.len() as u32, width: *w as u16, height: *w as u16, levels: *levels as u32 });
+            htex.extend_from_slice(bytes);
+            htex.resize((htex.len() + 15) & !15, 0);
+        }
+        let size = [profile["facade"]["size"][0].as_u64().unwrap_or(512) as usize, profile["facade"]["size"][1].as_u64().unwrap_or(128) as usize];
+        let (day, night) = handheld::facades(&tex::load(&input.join("facade.day.png"))?, &tex::load(&input.join("facade.night.png"))?, size[0], size[1], 0.7354);
+        let (bytes, levels) = handheld::pair(target, day, night, usize::MAX, 256);
+        hpic.push(pack::HandPicture { offset: htex.len() as u32, size: bytes.len() as u32, width: size[0] as u16, height: size[1] as u16, levels: levels as u32 });
+        htex.extend_from_slice(&bytes);
+        for c in cards {
+            htex.resize((htex.len() + 15) & !15, 0);
+            let (w, h) = (c.day.w, c.day.h);
+            let (bytes, levels) = handheld::pair(target, c.day, c.night, usize::MAX, 0);
+            hpic.push(pack::HandPicture { offset: htex.len() as u32, size: bytes.len() as u32, width: w as u16, height: h as u16, levels: levels as u32 });
+            htex.extend_from_slice(&bytes);
+        }
 
-    // ---- the pack
+        // ---- the cells: a tile's picture cut by cell
+        let cell_size = profile["ground"]["cell"].as_u64().unwrap_or(256) as usize;
+        let cell_levels = profile["ground"]["cellLevels"].as_u64().unwrap_or(3) as usize;
+        let per_tile = cells / BLOCK_TILES as usize;
+        if per_tile * BLOCK_TILES as usize != cells {
+            return Err("a handheld pack needs whole cells in a tile".into());
+        }
+        let cell_side = block / cells as f32;
+        let mut cell_pictures: Vec<Option<(Vec<u8>, usize, usize)>> = (0..nx * nz)
+            .into_par_iter()
+            .map(|i| -> Result<Vec<(usize, (Vec<u8>, usize, usize))>, String> {
+                let (tx, tz) = (i % nx, i / nx);
+                let (bx, bz) = (tx / BLOCK_TILES as usize, tz / BLOCK_TILES as usize);
+                let ids: Vec<(usize, usize, usize)> = (0..per_tile * per_tile)
+                    .map(|k| (k % per_tile, k / per_tile))
+                    .map(|(kx, kz)| (kx, kz, (bz * bnx + bx) * cells * cells + ((tz % BLOCK_TILES as usize) * per_tile + kz) * cells + (tx % BLOCK_TILES as usize) * per_tile + kx))
+                    .filter(|c| near_parts[c.2].iter().any(|p| !p.is_empty()))
+                    .collect();
+                if ids.is_empty() {
+                    return Ok(Vec::new());
+                }
+                let path = input.join(format!("top_{}_{}.png", tx0 + tx as i32, tz0 + tz as i32));
+                let img = if path.exists() { tex::load(&path)? } else { tex::Image::blank(cell_size * per_tile, cell_size * per_tile, [111, 110, 104]) };
+                let part = img.w / per_tile;
+                Ok(ids
+                    .into_iter()
+                    .map(|(kx, kz, id)| {
+                        let mut crop = tex::Image::blank(part, part, [0; 3]);
+                        for y in 0..part {
+                            let from = ((kz * part + y) * img.w + kx * part) * 4;
+                            crop.rgba[y * part * 4..(y + 1) * part * 4].copy_from_slice(&img.rgba[from..from + part * 4]);
+                        }
+                        let day = handheld::resize(&crop, cell_size.min(part), cell_size.min(part));
+                        (id, pair(day, (tx0 + tx as i32) as f32 * tile + kx as f32 * cell_side, (tz0 + tz as i32) as f32 * tile + kz as f32 * cell_side, cell_side, cell_levels))
+                    })
+                    .collect())
+            })
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .flatten()
+            .fold((0..near_parts.len()).map(|_| None).collect(), |mut all: Vec<Option<(Vec<u8>, usize, usize)>>, (id, p)| {
+                all[id] = Some(p);
+                all
+            });
+        for (id, parts) in near_parts.iter().enumerate() {
+            let Some((picture, w, levels)) = cell_pictures[id].take() else {
+                ncel.push(NearCell::default());
+                continue;
+            };
+            let offset = near.len();
+            let mut sizes = [0u32; 5];
+            for (k, part) in parts.iter().map(|p| p.as_slice()).chain([picture.as_slice()]).enumerate() {
+                sizes[k] = part.len() as u32;
+                near.extend_from_slice(part);
+                near.resize((near.len() + 15) & !15, 0);
+            }
+            ncel.push(NearCell { offset: offset as u32, size: (near.len() - offset) as u32, parts: sizes, width: w as u16, levels: levels as u16 });
+        }
+    }
+    println!("cook: pictures in {:.1} s ({:.1} MB of ground, {:.1} MB of cells)", t0.elapsed().as_secs_f32(), (gtex.len() + htex.len()) as f32 / 1e6, near.len() as f32 / 1e6);
+
     // What the area says about itself: where the camera starts and the places of its tour.
     let area = arg("--area").map(|p| read_json(Path::new(&p))).transpose()?.unwrap_or(Value::Null);
     let six = |v: &Value| -> [f32; 6] { core::array::from_fn(|k| v[k].as_f64().unwrap_or(0.0) as f32) };
@@ -824,7 +1060,21 @@ fn run() -> Result<(), String> {
     }
     println!("cook: {} lanes of traffic, {:.0} km", lanes.len(), lanes.iter().map(|l| l.length).sum::<f32>() / 1000.0);
     let unit = profile["heights"]["unit"].as_f64().unwrap_or(1.0 / 128.0) as f32;
-    let hmap: Vec<u16> = heights.data.iter().map(|&y| ((y - Y0) / unit).round().clamp(0.0, 65535.0) as u16).collect();
+    // The heights as the pack keeps them: every `store`-th cell each way, the highest of what it covers.
+    let keep = profile["heights"]["store"].as_u64().unwrap_or(1) as usize;
+    let (gw, gh) = (heights.w / keep, heights.h / keep);
+    let hmap: Vec<u16> = (0..gw * gh)
+        .map(|o| {
+            let (i, j) = (o % gw, o / gw);
+            let mut top = f32::NEG_INFINITY;
+            for jj in 0..keep {
+                for ii in 0..keep {
+                    top = top.max(heights.data[(j * keep + jj) * heights.w + i * keep + ii]);
+                }
+            }
+            ((top - Y0) / unit).round().clamp(0.0, 65535.0) as u16
+        })
+        .collect();
     let city = City {
         block,
         blocks_x: bnx as u32,
@@ -837,13 +1087,14 @@ fn run() -> Result<(), String> {
         margin: MARGIN,
         grid_x0: heights.x0,
         grid_z0: heights.z0,
-        grid_step: heights.step,
-        grid_w: heights.w as u32,
-        grid_h: heights.h as u32,
+        grid_step: heights.step * keep as f32,
+        grid_w: gw as u32,
+        grid_h: gh as u32,
         height_step: unit,
         view,
         hour: num(&area, "hour", 15.5),
-        pad: [0; 2],
+        region_blocks: region_blocks as u32,
+        flags: if faced { flag::FACED } else { 0 } | if streamed { flag::STREAMED } else { 0 },
     };
     let name = |l: usize| ["near", "mid", "far"][l];
     let meta = json!({
@@ -853,7 +1104,7 @@ fn run() -> Result<(), String> {
         "buildings": all.len(),
         "triangles": (0..LODS).map(|l| (name(l).to_string(), json!({"top": out.stats[l][0], "wall": out.stats[l][1], "solid": out.stats[l][2]}))).collect::<serde_json::Map<_, _>>(),
         "draws": out.batches.len(),
-        "bytes": {"top": out.vtop.len() * 12, "wall": out.vwal.len() * 20, "solid": out.vsol.len() * 16, "index": out.idx.len() * 2, "ground": gtex.len(), "facade": facd.len() + facn.len(), "heights": hmap.len() * 2},
+        "bytes": {"top": out.vtop.len(), "wall": out.vwal.len(), "solid": out.vsol.len(), "index": out.idx.len() * 2, "ground": gtex.len() + htex.len(), "facade": facd.len() + facn.len(), "heights": hmap.len() * 2, "cells": near.len(), "largestCell": ncel.iter().map(|c| c.size).max().unwrap_or(0)},
     });
     let mut w = pack::Writer::default();
     w.add(pack::META, serde_json::to_vec(&meta).unwrap());
@@ -863,19 +1114,30 @@ fn run() -> Result<(), String> {
     w.add(pack::CELL, pack::slice_bytes(&cell_table).to_vec());
     w.add(pack::BTCH, pack::slice_bytes(&out.batches).to_vec());
     w.add(pack::SPAN, pack::slice_bytes(&out.spans).to_vec());
-    w.add(pack::VTOP, pack::slice_bytes(&out.vtop).to_vec());
-    w.add(pack::VWAL, pack::slice_bytes(&out.vwal).to_vec());
-    w.add(pack::VSOL, pack::slice_bytes(&out.vsol).to_vec());
+    w.add(pack::VTOP, out.vtop);
+    w.add(pack::VWAL, out.vwal);
+    w.add(pack::VSOL, out.vsol);
     w.add(pack::IDX0, pack::slice_bytes(&out.idx).to_vec());
-    w.add(pack::FACD, facd);
-    w.add(pack::FACN, facn);
     w.add(pack::HMAP, pack::slice_bytes(&hmap).to_vec());
-    w.add(pack::LAMP, pack::slice_bytes(&lamp_map).to_vec());
+    if target == Target::Vita {
+        w.add(pack::FACD, facd);
+        w.add(pack::FACN, facn);
+        w.add(pack::LAMP, pack::slice_bytes(&lamp_map).to_vec());
+    } else {
+        w.add(pack::HPIC, pack::slice_bytes(&hpic).to_vec());
+        w.add(pack::HTEX, htex);
+        w.add(pack::NCEL, pack::slice_bytes(&ncel).to_vec());
+    }
     w.add(pack::TOUR, pack::slice_bytes(&tour).to_vec());
     w.add(pack::LANE, pack::slice_bytes(&lanes).to_vec());
     w.add(pack::LPTS, pack::slice_bytes(&lane_points).to_vec());
-    w.add(pack::GLVL, pack::slice_bytes(&glvl).to_vec());
-    w.add(pack::GTEX, gtex);
+    if target == Target::Vita {
+        w.add(pack::GLVL, pack::slice_bytes(&glvl).to_vec());
+        w.add(pack::GTEX, gtex);
+    } else {
+        // (last: a device keeps the rest in memory and reads this a cell at a time)
+        w.add(pack::NEAR, near);
+    }
     let bytes = w.finish();
     std::fs::create_dir_all(&out_dir).map_err(|e| e.to_string())?;
     std::fs::write(out_dir.join("city.pack"), &bytes).map_err(|e| e.to_string())?;

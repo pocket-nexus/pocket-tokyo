@@ -1,0 +1,72 @@
+{
+  "name": "n3ds30",
+  "target": "n3ds",
+  "cells": 4,
+  "ground": {
+    "block": 256,
+    "cell": 256,
+    "cellLevels": 3
+  },
+  "terrain": {
+    "error": [
+      0.8,
+      5.0
+    ],
+    "stride": [
+      4,
+      32
+    ],
+    "skirt": [
+      5.0,
+      20.0
+    ]
+  },
+  "near": {
+    "cell": 1,
+    "cap": 4.0,
+    "minArea": 25,
+    "eps": 1.25,
+    "minHeight": 2.0,
+    "smooth": 2
+  },
+  "prisms": [
+    {
+      "cell": 4,
+      "cap": 10.0,
+      "minArea": 200,
+      "eps": 3.2,
+      "minHeight": 10,
+      "smooth": 1
+    },
+    {
+      "cell": 8,
+      "cap": 24.0,
+      "minArea": 800,
+      "eps": 6.0,
+      "minHeight": 40,
+      "smooth": 1
+    }
+  ],
+  "solids": {
+    "error": [
+      1.2,
+      4.0
+    ],
+    "minSize": [
+      7.0,
+      30.0
+    ]
+  },
+  "facade": {
+    "size": [
+      1024,
+      128
+    ]
+  },
+  "heights": {
+    "step": 2.0,
+    "unit": 0.0078125,
+    "store": 4
+  },
+  "region": 1
+}

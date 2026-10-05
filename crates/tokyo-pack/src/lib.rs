@@ -6,10 +6,14 @@
 //! section it wants; `GTEX` is read a picture at a time.
 //!
 //! The city is cut three ways. A *block* is a square of ground with one
-//! picture from above; it is drawn whole at the mid level of detail. A block
-//! is `City::cells` squared *cells*, each drawn on its own at the near level.
-//! Blocks stand two by two in *regions*, each drawn whole, with a small
-//! picture of its own, at the far level.
+//! picture from above; it is drawn at the mid level of detail. A block is
+//! `City::cells` squared *cells*, each drawn on its own at the near level.
+//! `City::region_blocks` squared blocks form a *region*, drawn at the far
+//! level.
+//!
+//! A pack for a handheld (`flag::STREAMED`) keeps each cell's near level as
+//! one record of `NEAR`, read when the eye comes near and dropped when it has
+//! left: its vertices, its indices and a picture of its own ground.
 //!
 //! | Tag    | Contents |
 //! | ------ | -------- |
@@ -23,13 +27,17 @@
 //! | `VWAL` | `WallVertex` records |
 //! | `VSOL` | `SolidVertex` records: structures, models, the lattice tower |
 //! | `IDX0` | `u16` indices, relative to each batch's first vertex |
-//! | `SPAN` | `u32` offsets into a batch's indices, per batch ordered by cell: `cells² + 1`, or `cells² × (SECTORS + 1) + 1` for walls |
+//! | `SPAN` | `u32` offsets into a batch's indices. Per batch ordered by cell: `cells² + 1`, or `cells² × (SECTORS + 1) + 1` when it is also ordered by sector. Per near batch ordered by sector (`flag::FACED`): `SECTORS + 2` |
 //! | `FACD` | the facades by day: `TexHeader`, then BC3 levels, largest first |
 //! | `FACN` | the facades' lights: `TexHeader`, then BC1 levels |
 //! | `GLVL` | `GroundLevel` table: where each picture from above is in `GTEX` |
 //! | `GTEX` | BC1 levels of every block's and every region's picture from above |
 //! | `HMAP` | `u16` per cell of `City::grid`: the top of whatever stands there, in `City::height_step` metres above `City::y0` |
 //! | `TOUR` | `f32 × 6` per place of the tour: where the eye is, and the point it looks at |
+//! | `HPIC` | handheld packs: `HandPicture` table, one per block, then the facades, then the cards |
+//! | `HTEX` | handheld packs: the pictures. PSP: a day palette and a night palette (256 × 4 bytes, red first), then levels of 8-bit indices, largest first, each swizzled. 3DS: the day picture's levels, then the night picture's, `r5 g6 b5`, tiled |
+//! | `NCEL` | handheld packs: `NearCell` table, one per cell |
+//! | `NEAR` | handheld packs: per cell its top, wall and solid vertices, its indices and its picture (as in `HTEX`) |
 //! | `LANE` | the traffic's lanes: `tokyo_sim::traffic::Lane` records |
 //! | `LPTS` | `f32 × 3` per point of a lane, on its side of the road |
 //! | `LAMP` | `u16` per cell of the same grid: lamp light on the ground at night, half strength, `r << 11 | g << 5 | b` |
@@ -43,7 +51,7 @@ use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
 pub const MAGIC: u32 = u32::from_le_bytes(*b"TKPK");
-pub const VERSION: u32 = 2;
+pub const VERSION: u32 = 3;
 
 pub const fn tag(t: &[u8; 4]) -> u32 {
     u32::from_le_bytes(*t)
@@ -66,13 +74,27 @@ pub const GTEX: u32 = tag(b"GTEX");
 pub const HMAP: u32 = tag(b"HMAP");
 pub const LAMP: u32 = tag(b"LAMP");
 pub const TOUR: u32 = tag(b"TOUR");
+pub const HPIC: u32 = tag(b"HPIC");
+pub const HTEX: u32 = tag(b"HTEX");
 pub const LANE: u32 = tag(b"LANE");
 pub const LPTS: u32 = tag(b"LPTS");
+pub const NCEL: u32 = tag(b"NCEL");
+pub const NEAR: u32 = tag(b"NEAR");
 
 /// Levels of detail: near by cell, mid by block, far by region.
 pub const LODS: usize = 3;
-/// Blocks along a region's side.
-pub const REGION_BLOCKS: usize = 2;
+/// Kinds of batch (`kind`).
+pub const KINDS: usize = 4;
+
+/// `City::flags`.
+pub mod flag {
+    /// Solids are ordered by sector as walls are, and a near batch of walls or solids has a `SPAN` record of
+    /// its own: where each sector starts. For a machine that lights a group of faces with one colour.
+    pub const FACED: u32 = 1;
+    /// The near level is in `NEAR`, a record per cell (`NCEL`); a near batch counts its vertices and indices
+    /// from the start of its cell's.
+    pub const STREAMED: u32 = 2;
+}
 
 /// The city's frame: metres, x east, y up, z south.
 #[derive(Clone, Copy, Debug, Default)]
@@ -105,7 +127,10 @@ pub struct City {
     pub view: [f32; 6],
     /// The hour the city opens at.
     pub hour: f32,
-    pub pad: [u32; 2],
+    /// Blocks along a region's side.
+    pub region_blocks: u32,
+    /// `flag` bits.
+    pub flags: u32,
 }
 
 /// Which program draws a batch.
@@ -116,6 +141,9 @@ pub mod kind {
     pub const WALL: u32 = 1;
     /// Painted geometry: `SolidVertex`.
     pub const SOLID: u32 = 2;
+    /// A picture with holes on a few faces, in place of a lattice (handheld packs): wall vertices, textured by
+    /// the card picture, drawn last and blended.
+    pub const CARD: u32 = 3;
 }
 
 /// A range of the `BTCH` table.
@@ -126,7 +154,8 @@ pub struct Draws {
     pub count: u32,
 }
 
-/// Two by two blocks at the far level of detail. Its vertices are normalized over the region's side.
+/// `City::region_blocks` squared blocks at the far level of detail. Its vertices are normalized over the
+/// region's side.
 #[derive(Clone, Copy, Debug, Default)]
 #[repr(C)]
 pub struct Region {
@@ -136,7 +165,8 @@ pub struct Region {
     /// Its batches, their indices ordered by cell: `City::cells` squared cells over the region.
     pub far: Draws,
     /// `GroundLevel` records of its picture from above, largest first. The picture also shows what the far
-    /// level does not draw: structures, railways, bridges.
+    /// level does not draw: structures, railways, bridges. (A handheld pack has none: the far level takes its
+    /// block's picture.)
     pub ground_first: u32,
     pub ground_levels: u32,
 }
@@ -193,6 +223,31 @@ pub struct GroundLevel {
     pub size: u32,
     pub width: u32,
     pub pad: u32,
+}
+
+/// The near level of a cell in a handheld pack: one record of `NEAR`.
+#[derive(Clone, Copy, Debug, Default)]
+#[repr(C)]
+pub struct NearCell {
+    pub offset: u32,
+    pub size: u32,
+    /// Bytes of its parts, in the order they are stored, each starting on a 16-byte boundary: top vertices,
+    /// wall vertices, solid vertices, indices, picture.
+    pub parts: [u32; 5],
+    /// The picture: the side of its largest level, and how many levels.
+    pub width: u16,
+    pub levels: u16,
+}
+
+/// A day and night pair of pictures of a handheld pack, in `HTEX`.
+#[derive(Clone, Copy, Debug, Default)]
+#[repr(C)]
+pub struct HandPicture {
+    pub offset: u32,
+    pub size: u32,
+    pub width: u16,
+    pub height: u16,
+    pub levels: u32,
 }
 
 /// Ground or roof, 12 bytes. `pos`: x and z over the block (or region), y over the city's height range, all

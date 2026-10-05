@@ -1,5 +1,6 @@
 {
   "name": "vita60",
+  "target": "vita",
   "cells": 4,
   "ground": { "block": 1024, "far": 512, "floor": 8 },
   "terrain": { "error": [0.5, 4.0], "stride": [4, 32], "skirt": [4.0, 20.0] },

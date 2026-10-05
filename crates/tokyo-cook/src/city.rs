@@ -41,6 +41,15 @@ pub fn sector_of(n: P3) -> u8 {
     ((turn * SECTORS as f32) as usize).min(SECTORS - 1) as u8
 }
 
+/// The group a painted triangle is lit in: the sector it faces when it stands upright, the rest together.
+pub fn solid_sector(p: &[P3; 3]) -> u8 {
+    let (n, _) = face(p[0], p[1], p[2]);
+    if n[1].abs() >= 0.2 {
+        return SECTORS as u8;
+    }
+    sector_of(n)
+}
+
 #[derive(Clone, Copy)]
 pub struct SolidTri {
     pub p: [P3; 3],

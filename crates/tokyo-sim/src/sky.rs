@@ -85,3 +85,19 @@ pub fn light(hour: f32, day: f32) -> Light {
         sun_dir,
     }
 }
+
+/// The light of an hour on a machine that lights a group of faces with one colour: on a wall that looks to each
+/// sector of the compass (`tokyo_pack::SECTORS`), and last on what looks up. By night the pictures carry their
+/// own light, and every colour goes to 1.
+pub fn by_sector(l: &Light) -> [[f32; 3]; tokyo_pack::SECTORS + 1] {
+    let mut out = [[0.0f32; 3]; tokyo_pack::SECTORS + 1];
+    for (k, o) in out.iter_mut().enumerate() {
+        // A wall sees half the sky and half the ground; what looks up sees the sky.
+        let (facing, up) = if k < tokyo_pack::SECTORS { (max(crate::view::sector_normal(k).dot(l.dir), 0.0), 0.5) } else { (max(l.dir.y, 0.0), 1.0) };
+        for c in 0..3 {
+            let day = l.sun[c] * facing + lerp(l.ground[c], l.sky[c], up);
+            o[c] = lerp(day, 1.0, l.night);
+        }
+    }
+    out
+}
