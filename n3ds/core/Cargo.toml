@@ -24,6 +24,10 @@ tokyo-pack = { path = "../../crates/tokyo-pack", default-features = false }
 # The flow around the flight, and the interface's channel as the C symbols PocketJS's guest driver calls (svcwire.h).
 tokyo-interface = { path = "../../crates/tokyo-interface", default-features = false, features = ["wire"] }
 
+[features]
+# The wgpu host's build of this source (wgpu/core): never set here.
+host = []
+
 [profile.release]
 # The target defaults to unwinding; a static library in a libctru program has no unwinder.
 panic = "abort"

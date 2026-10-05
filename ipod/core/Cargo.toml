@@ -26,6 +26,10 @@ tokyo-interface = { path = "../../crates/tokyo-interface", default-features = fa
 # them through a texture (`tk_card`).
 pocket3d-title = { path = "../../vendor/pocketjs/engine/pocket3d/crates/pocket3d-title" }
 
+[features]
+# The wgpu host's build of this source (wgpu/core): never set here.
+host = []
+
 [profile.release]
 panic = "abort"
 opt-level = 3

@@ -11,11 +11,17 @@
 //! service channel is answered here (`tokyo_interface::wire` exports the
 //! `svcwire_*` functions PocketJS's guest driver calls), and the flow around
 //! the flight is `tokyo_interface::Session`.
+//!
+//! The wgpu host (`wgpu/`) is Rust over the same functions: `wgpu/core` builds
+//! this source with the `host` feature, as a library of a program that has an
+//! allocator of its own and a screen whose shape is set while it runs
+//! (`tk_shape`).
 
 #![no_std]
 
 extern crate alloc;
 
+#[cfg(not(feature = "host"))]
 #[path = "alloc.rs"]
 mod allocator;
 
@@ -50,10 +56,13 @@ const RETIRED: u32 = 3;
 const AHEAD: f32 = 48.0;
 
 /// The screen's width over its height, and what the status calls the machine.
-#[cfg(not(target_vendor = "apple"))]
+#[cfg(not(any(target_vendor = "apple", feature = "host")))]
 const SCREEN: (f32, &str) = (400.0 / 240.0, "3ds");
-#[cfg(target_vendor = "apple")]
+#[cfg(all(target_vendor = "apple", not(feature = "host")))]
 const SCREEN: (f32, &str) = (480.0 / 320.0, "ipod");
+/// A host that is not one machine: the width over the height is where `tk_shape` starts from.
+#[cfg(feature = "host")]
+const SCREEN: (f32, &str) = (480.0 / 320.0, "wgpu");
 
 /// Frames between two lines of the numbers in flight: 15 lines a second at the 3DS's 30 frames, 12 at the
 /// iPod touch's 60 (each line there is a redraw of the interface's texture).
@@ -62,97 +71,124 @@ const NUMBERS_EVERY: u32 = 2;
 #[cfg(target_vendor = "apple")]
 const NUMBERS_EVERY: u32 = 5;
 
+/// The width over the height of the screen a frame is chosen for.
+#[cfg(not(feature = "host"))]
+#[inline(always)]
+fn aspect() -> f32 {
+    SCREEN.0
+}
+
+/// A host's screen: its shape is a value, set by `tk_shape`.
+#[cfg(feature = "host")]
+static mut ASPECT: f32 = SCREEN.0;
+
+#[cfg(feature = "host")]
+fn aspect() -> f32 {
+    unsafe { ASPECT }
+}
+
+/// The shape of the screen from now on: its width over its height, and the frames between two lines of the
+/// numbers in flight. Before or after `tk_init`.
+#[cfg(feature = "host")]
+#[no_mangle]
+pub extern "C" fn tk_shape(aspect: f32, numbers_every: u32) {
+    unsafe { ASPECT = aspect };
+    if let Some(a) = started() {
+        a.session.numbers_every = numbers_every.max(1);
+    }
+}
+
 /// A slot, as the host's reading thread sees it: it reads `size` bytes at `offset` of the pack for a slot that
 /// is `WANTED` and sets it `READY`.
 #[repr(C)]
 pub struct Slot {
-    state: AtomicU32,
-    cell: u32,
-    offset: u32,
-    size: u32,
-    rank: AtomicU32,
+    pub state: AtomicU32,
+    pub cell: u32,
+    pub offset: u32,
+    pub size: u32,
+    pub rank: AtomicU32,
 }
 
 static mut TABLE: [Slot; SLOTS] = [const { Slot { state: AtomicU32::new(FREE), cell: u32::MAX, offset: 0, size: 0, rank: AtomicU32::new(0) } }; SLOTS];
 
 #[repr(C)]
 pub struct Pack {
-    city: *const City,
-    regions: *const Region,
-    region_count: u32,
-    blocks: *const Block,
-    block_count: u32,
-    cells: *const Cell,
-    cell_count: u32,
-    batches: *const Batch,
-    batch_count: u32,
-    spans: *const u32,
-    span_count: u32,
-    tour: *const [f32; 6],
-    tour_count: u32,
-    heights: *const u16,
-    near: *const NearCell,
+    pub city: *const City,
+    pub regions: *const Region,
+    pub region_count: u32,
+    pub blocks: *const Block,
+    pub block_count: u32,
+    pub cells: *const Cell,
+    pub cell_count: u32,
+    pub batches: *const Batch,
+    pub batch_count: u32,
+    pub spans: *const u32,
+    pub span_count: u32,
+    pub tour: *const [f32; 6],
+    pub tour_count: u32,
+    pub heights: *const u16,
+    pub near: *const NearCell,
     /// Where `NEAR` starts in the pack file.
-    near_offset: u32,
-    meta: *const u8,
-    meta_len: u32,
-    landmarks: *const Landmark,
-    landmark_count: u32,
+    pub near_offset: u32,
+    pub meta: *const u8,
+    pub meta_len: u32,
+    pub landmarks: *const Landmark,
+    pub landmark_count: u32,
 }
 
 #[repr(C)]
 pub struct Pad {
     /// `camera::btn` bits, then `flight::key` bits and `tokyo_interface::pad::MENU`.
-    buttons: u32,
-    keys: u32,
-    lx: f32,
-    ly: f32,
-    rx: f32,
-    ry: f32,
+    pub buttons: u32,
+    pub keys: u32,
+    pub lx: f32,
+    pub ly: f32,
+    pub rx: f32,
+    pub ry: f32,
 }
 
 /// The frame as the host draws it.
 #[repr(C)]
 #[derive(Default)]
 pub struct View {
-    eye: [f32; 3],
-    look: [f32; 3],
-    fov: f32,
-    hour: f32,
-    night: f32,
-    haze: [f32; 3],
+    pub eye: [f32; 3],
+    pub look: [f32; 3],
+    pub fov: f32,
+    pub hour: f32,
+    pub night: f32,
+    pub haze: [f32; 3],
     /// Light on what looks up, halved (the combiner doubles): the day's, mixed with what the night leaves.
-    top: [f32; 3],
+    pub top: [f32; 3],
     /// The same on a wall that looks to each sector, and last on painted faces that look up or down.
-    lights: [[f32; 3]; SECTORS + 1],
+    pub lights: [[f32; 3]; SECTORS + 1],
     /// What a shadow leaves of the light on the ground.
-    shade: f32,
+    pub shade: f32,
     /// Towards the sun, for the shadows; all zero when no shadow is to be drawn anew.
-    sun: [f32; 3],
-    near: f32,
-    mid: f32,
-    tour_on: u32,
-    stats: u32,
-    pace: u32,
-    option: u32,
+    pub sun: [f32; 3],
+    pub near: f32,
+    pub mid: f32,
+    pub tour_on: u32,
+    pub stats: u32,
+    pub pace: u32,
+    pub option: u32,
 }
 
 #[repr(C)]
 pub struct Perf {
-    frame: f32,
-    worst: f32,
-    late: u32,
-    frames: u32,
-    cpu: f32,
-    gpu: f32,
-    draws: u32,
-    tris: [u32; KINDS],
+    pub frame: f32,
+    pub worst: f32,
+    pub late: u32,
+    pub frames: u32,
+    pub cpu: f32,
+    pub gpu: f32,
+    pub draws: u32,
+    pub tris: [u32; KINDS],
 }
 
 #[repr(C)]
 pub struct SkyVertex {
-    pos: [f32; 3],
-    color: [u8; 4],
+    pub pos: [f32; 3],
+    pub color: [u8; 4],
 }
 
 struct App {
@@ -358,7 +394,7 @@ pub unsafe extern "C" fn tk_choose(lists: *mut *const Item, lengths: *mut u32) {
             s.state.store(RETIRED, Ordering::Release);
         }
     }
-    let vp = mat::mul(&mat::perspective(fov, SCREEN.0, 3.0, 12000.0), &mat::view(eye, look, 0.0));
+    let vp = mat::mul(&mat::perspective(fov, aspect(), 3.0, 12000.0), &mat::view(eye, look, 0.0));
     let planes = mat::planes(&vp);
     let tables = view::Tables { city: &a.city, regions: a.regions, blocks: a.blocks, cells: a.cells, batches: a.batches, spans: a.spans, landmarks: a.landmarks };
     let slot_of = &a.slot_of;
@@ -440,7 +476,7 @@ pub extern "C" fn tk_drew(tris: u32) {
 
 /// Where a texel of a square texture is stored. The PICA200: 8-texel squares in rows from the last, each in
 /// Morton order.
-#[cfg(not(target_vendor = "apple"))]
+#[cfg(not(any(target_vendor = "apple", feature = "host")))]
 fn tiled(x: usize, y: usize, side: usize) -> usize {
     let fy = side - 1 - y;
     let mut m = 0;
@@ -451,8 +487,8 @@ fn tiled(x: usize, y: usize, side: usize) -> usize {
     ((fy / 8) * (side / 8) + x / 8) * 64 + m
 }
 
-/// OpenGL ES: rows, the first row first.
-#[cfg(target_vendor = "apple")]
+/// OpenGL ES, and a host's GPU: rows, the first row first.
+#[cfg(any(target_vendor = "apple", feature = "host"))]
 fn tiled(x: usize, y: usize, side: usize) -> usize {
     y * side + x
 }
@@ -564,7 +600,7 @@ pub unsafe extern "C" fn tk_status(out: *mut u8, cap: u32, perf: *const Perf, ex
 ///
 /// # Safety
 /// `pixels` has room for `width * height * 4` bytes.
-#[cfg(target_vendor = "apple")]
+#[cfg(all(target_vendor = "apple", not(feature = "host")))]
 #[no_mangle]
 pub unsafe extern "C" fn tk_card(pixels: *mut u8, width: u32, height: u32, tick: u32, shown: u32) -> u32 {
     use pocket3d_title::{draw, level, Layout, Surface, TICKS};
