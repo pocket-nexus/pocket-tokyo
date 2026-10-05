@@ -10,7 +10,6 @@ import { createGesture } from "@pocketjs/framework/gesture";
 import { onFrame } from "@pocketjs/framework/lifecycle";
 import type { NodeMirror } from "@pocketjs/framework/renderer";
 import { createFlight, createPulse, HOURS, type Flight, type Row } from "../flight.ts";
-import { AREA } from "../generated/area.ts";
 import { connectHost, type Host } from "../host.ts";
 import { AreaMap, Button, Chip, Clock, Compass, createMenu, Face, Fade, Heading, Keep, Legend, Loading, Mark, type Menu, Note, Panel, Place, Readout, Rows, Stats, TimeBar, Touchable, Wordmark } from "../parts.tsx";
 import { FLY } from "../protocol.ts";
@@ -39,7 +38,7 @@ export default function TouchScreen() {
       <Keep when={host.mode() === "menu"} eager width={W} height={H}><Over flight={flight} menu={menu} /></Keep>
       {/* The strip stays built and is shown with a list. It names no button: this device has none. */}
       <View class="absolute" style={{ insetL: 0, insetB: 0, display: flight.listing() ? 0 : 1 }}>
-        <Legend width={W} left={flight.mode() === "title" ? `${AREA.name}, ${AREA.district}` : flight.place()} legend="" />
+        <Legend width={W} left={flight.notice()} legend="" />
       </View>
     </View>
   );

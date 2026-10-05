@@ -69,6 +69,9 @@ export interface Flight {
   note: Accessor<string>;
   /** The place the eye is at. */
   place: Accessor<string>;
+  /** What the strip under a list says at its left: the area on the title, the place under a menu.
+   *  It holds through a flight, so that a new place writes no text while no list is up. */
+  notice: Accessor<string>;
   /** The title's own rows and the menu's: a presentation may build them before either is first shown. */
   lists: { title: Row[]; menu: Row[] };
   /** The hours' rows: the first `HOURS.length` turn the clock, and what follows is the clock's own setting. */
@@ -289,8 +292,9 @@ export function createFlight(host: Host, touch: boolean): Flight {
     { label: "Back to the title", press: () => host.send({ type: "title" }) },
   ];
   const explained: Row[] = controls(touch).map(([label, value]) => ({ label, value }));
+  const whole = AREA.district ? `${AREA.name}, ${AREA.district}` : AREA.name;
   const about: Row[] = [
-    { label: "Place", value: AREA.district ? `${AREA.name}, ${AREA.district}` : AREA.name },
+    { label: "Place", value: whole },
     { label: "Buildings", value: "PLATEAU, MLIT Japan" },
     { label: "Streets", value: "© OpenStreetMap contributors" },
     { label: "Terrain", value: "GSI Japan" },
@@ -307,8 +311,10 @@ export function createFlight(host: Host, touch: boolean): Flight {
     return mode() === "title" ? title : menu;
   }, []);
 
+  const notice = createMemo<string>((before) => (mode() === "title" ? whole : mode() === "menu" ? place() : before), whole);
+
   return {
-    host, mode, listing, sheet, rows, place, hours,
+    host, mode, listing, sheet, rows, place, notice, hours,
     lists: { title, menu },
     open: setSheet,
     // A note belongs to the flight: it does not stand under a list.
