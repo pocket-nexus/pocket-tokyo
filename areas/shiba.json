@@ -16,5 +16,29 @@
     [-900, 520, -900, 0, 60, 0],
     [300, 600, -1300, 0, 50, 0],
     [1300, 480, -300, 0, 80, 0]
+  ],
+  "district": "Minato, Tokyo",
+  "places": [
+    { "name": "Tokyo Tower", "lat": 35.65858, "lon": 139.74543, "reach": 420 },
+    { "name": "Zojo-ji", "lat": 35.6574, "lon": 139.7482 },
+    { "name": "Shiba Park", "lat": 35.6551, "lon": 139.7488 },
+    { "name": "Azabudai Hills", "lat": 35.661, "lon": 139.7405 },
+    { "name": "Roppongi Hills", "lat": 35.6605, "lon": 139.7292 },
+    { "name": "Roppongi", "lat": 35.6628, "lon": 139.7313 },
+    { "name": "Tokyo Midtown", "lat": 35.6657, "lon": 139.731 },
+    { "name": "Akasaka", "lat": 35.6672, "lon": 139.74 },
+    { "name": "Kamiyacho", "lat": 35.663, "lon": 139.745 },
+    { "name": "Atago Shrine", "lat": 35.6649, "lon": 139.7484 },
+    { "name": "Toranomon Hills", "lat": 35.6669, "lon": 139.7496 },
+    { "name": "Shimbashi", "lat": 35.6664, "lon": 139.7583 },
+    { "name": "Shiodome", "lat": 35.6644, "lon": 139.76 },
+    { "name": "Daimon", "lat": 35.6567, "lon": 139.7547 },
+    { "name": "Hamamatsucho", "lat": 35.6555, "lon": 139.7571 },
+    { "name": "Takeshiba", "lat": 35.6545, "lon": 139.762 },
+    { "name": "Azabu-Juban", "lat": 35.6563, "lon": 139.7366 },
+    { "name": "Kasumigaseki", "lat": 35.6738, "lon": 139.751 },
+    { "name": "Hibiya Park", "lat": 35.6736, "lon": 139.756 },
+    { "name": "National Diet", "lat": 35.6759, "lon": 139.745 },
+    { "name": "Hie Shrine", "lat": 35.6747, "lon": 139.7397 }
   ]
 }

@@ -4,6 +4,11 @@
 //! once and then asks, each frame, where the eye is, what the light is and
 //! what to draw. The slots that hold the cells' near levels are decided here
 //! and filled by a thread of the host's.
+//!
+//! The interface is a PocketJS guest the host runs beside this library: its
+//! service channel is answered here (`tokyo_interface::wire` exports the
+//! `svcwire_*` functions PocketJS's guest driver calls), and the flow around
+//! the flight is `tokyo_interface::Session`.
 
 #![no_std]
 
@@ -18,8 +23,8 @@ use core::ffi::c_char;
 use core::fmt::Write;
 use core::sync::atomic::{AtomicU32, Ordering};
 
+use tokyo_interface::{channel, Mode, Pace, Session};
 use tokyo_pack::{Batch, Block, Cell, City, Landmark, NearCell, Region, KINDS, SECTORS};
-use tokyo_sim::camera::Input;
 use tokyo_sim::flight::Flight;
 use tokyo_sim::mat;
 use tokyo_sim::math::*;
@@ -82,7 +87,7 @@ pub struct Pack {
 
 #[repr(C)]
 pub struct Pad {
-    /// `camera::btn` bits, then `flight::key` bits.
+    /// `camera::btn` bits, then `flight::key` bits and `tokyo_interface::pad::MENU`.
     buttons: u32,
     keys: u32,
     lx: f32,
@@ -137,6 +142,10 @@ pub struct SkyVertex {
 
 struct App {
     flight: Flight,
+    /// The flow around the flight: the title, the flight, the menu over it.
+    session: Session,
+    /// What the interface asked to have stored, until the host takes it.
+    prefs: Option<String>,
     city: City,
     regions: &'static [Region],
     blocks: &'static [Block],
@@ -192,8 +201,13 @@ pub unsafe extern "C" fn tk_init(p: *const Pack, budget: u32) -> *const c_char {
     let place: String = core::str::from_utf8(meta).ok().and_then(|m| m.split("\"name\":\"").nth(1)).and_then(|m| m.split('"').next()).unwrap_or("Tokyo").into();
     let mut flight = Flight::new(city.view, city.hour, tour, budget, (600.0, 1600.0), 2);
     flight.clearance = 30.0;
+    // The numbers in flight 15 times a second: every other frame at this machine's pace.
+    let mut session = Session::new();
+    session.numbers_every = 2;
     *core::ptr::addr_of_mut!(APP) = Some(App {
         flight,
+        session,
+        prefs: None,
         city,
         regions: core::slice::from_raw_parts(p.regions, p.region_count as usize),
         blocks: core::slice::from_raw_parts(p.blocks, p.block_count as usize),
@@ -224,15 +238,20 @@ pub unsafe extern "C" fn tk_control(text: *const u8, len: u32) {
 pub unsafe extern "C" fn tk_step(pad: *const Pad, ticks: u32) {
     let a = app();
     let p = &*pad;
-    let inp = Input { buttons: p.buttons, lx: p.lx, ly: p.ly, rx: p.rx, ry: p.ry };
+    // What the interface asked on its last turn, the frame, and what the interface is shown of it.
+    if let Some(text) = a.session.obey(&mut a.flight, |_, _| {}) {
+        a.prefs = Some(text);
+    }
+    let pad = tokyo_interface::Pad { buttons: p.buttons | p.keys, lx: p.lx, ly: p.ly, rx: p.rx, ry: p.ry };
     let heights = a.heights;
     let c = a.city;
-    a.flight.step(&inp, p.keys, ticks as f32 / 60.0, |x, z| {
+    a.session.run(&mut a.flight, &pad, ticks as f32 / 60.0, |x, z| {
         let i = (((x - c.grid_x0) / c.grid_step) as i32).clamp(0, c.grid_w as i32 - 1) as usize;
         let j = (((z - c.grid_z0) / c.grid_step) as i32).clamp(0, c.grid_h as i32 - 1) as usize;
         c.y0 + heights[j * c.grid_w as usize + i] as f32 * c.height_step
     });
     a.light = sky::light(a.flight.hour, DAY);
+    a.session.publish(&a.flight, &mut channel().state);
 }
 
 #[no_mangle]
@@ -520,4 +539,128 @@ pub unsafe extern "C" fn tk_status(out: *mut u8, cap: u32, perf: *const Perf, ex
 #[no_mangle]
 pub extern "C" fn tk_ground(x: f32, z: f32) -> f32 {
     height(app(), x, z)
+}
+
+// ---------------------------------------------------------------- the interface
+
+/// The flight, once `tk_init` has made it.
+fn started() -> Option<&'static mut App> {
+    unsafe { (*core::ptr::addr_of_mut!(APP)).as_mut() }
+}
+
+/// What the interface shows while there is no flight: 0 the pack is being read (`message` names the step),
+/// 1 the start failed (`message` says why). The first `tk_step` replaces it with the flight's flow.
+///
+/// # Safety
+/// `message` points at `len` bytes.
+#[no_mangle]
+pub unsafe extern "C" fn tk_stage(stage: u32, message: *const u8, len: u32) {
+    let state = &mut channel().state;
+    state.mode = if stage == 0 { Mode::Loading } else { Mode::Error };
+    state.message.clear();
+    if let Ok(text) = core::str::from_utf8(core::slice::from_raw_parts(message, len as usize)) {
+        state.message.push_str(text);
+    }
+}
+
+/// The preferences the host read from its storage at the start, for the interface.
+///
+/// # Safety
+/// `text` points at `len` bytes.
+#[no_mangle]
+pub unsafe extern "C" fn tk_prefs_stored(text: *const u8, len: u32) {
+    let state = &mut channel().state;
+    state.prefs.clear();
+    if let Ok(text) = core::str::from_utf8(core::slice::from_raw_parts(text, len as usize)) {
+        state.prefs.push_str(text);
+    }
+}
+
+/// What the interface asked to have stored since the last call, NUL-terminated: its length, or 0 when there
+/// is nothing (or `cap` is too small for it, in which case it stays owed).
+///
+/// # Safety
+/// `out` has room for `cap` bytes.
+#[no_mangle]
+pub unsafe extern "C" fn tk_prefs_take(out: *mut u8, cap: u32) -> u32 {
+    let Some(a) = started() else { return 0 };
+    let Some(text) = a.prefs.take() else { return 0 };
+    if text.len() >= cap as usize {
+        a.prefs = Some(text);
+        return 0;
+    }
+    core::ptr::copy_nonoverlapping(text.as_ptr(), out, text.len());
+    *out.add(text.len()) = 0;
+    text.len() as u32
+}
+
+/// Whether the guest's next turn is worth taking (`tokyo_interface::Pace`): a turn runs the whole framework's
+/// frame, milliseconds of this CPU however little changed. `buttons`: PocketJS's bits, held at any moment
+/// since the last offer; `touching`: a stylus is on the lower screen. Before the flight exists every turn is.
+#[no_mangle]
+pub extern "C" fn tk_guest_due(buttons: u32, touching: u32) -> u32 {
+    static mut PACE: Pace = Pace::new();
+    match started() {
+        Some(a) => unsafe { (*core::ptr::addr_of_mut!(PACE)).due(&a.session, buttons, touching != 0) as u32 },
+        None => 1,
+    }
+}
+
+/// A guest holds the interface's channel.
+#[no_mangle]
+pub extern "C" fn tk_interface_open() -> u32 {
+    unsafe { channel() }.is_open() as u32
+}
+
+/// The frame in numbers for the interface, while its statistics setting is on: twice a second.
+///
+/// # Safety
+/// After `tk_init`.
+#[no_mangle]
+pub unsafe extern "C" fn tk_report(perf: *const Perf) {
+    let a = app();
+    let p = &*perf;
+    let line = &mut channel().state.stats;
+    if !a.flight.stats {
+        line.clear();
+    } else if p.frames % 15 == 0 || line.is_empty() {
+        line.clear();
+        let tris = p.tris.iter().sum::<u32>();
+        let _ = write!(line, "{:.1} fps · {:.1} ms · late {} · {} draws · {}.{}k tris", 1000.0 / max(p.frame, 0.1), p.frame, p.late, p.draws, tris / 1000, tris % 1000 / 100);
+    }
+}
+
+/// Words from the development host that are the flow's, beside the ones `tk_control` takes:
+/// `mode=title|flight|menu` sets the flow outright, and `ui=tour|fly|menu|resume|title` asks what the
+/// interface would ask.
+///
+/// # Safety
+/// `text` points at `len` bytes.
+#[no_mangle]
+pub unsafe extern "C" fn tk_remote(text: *const u8, len: u32) {
+    let Ok(text) = core::str::from_utf8(core::slice::from_raw_parts(text, len as usize)) else { return };
+    for word in text.split_ascii_whitespace() {
+        match word.split_once('=') {
+            Some(("mode", name)) => {
+                if let (Some(mode @ (Mode::Title | Mode::Flight | Mode::Menu)), Some(a)) = (Mode::parse(name), started()) {
+                    a.session.mode = mode;
+                }
+            }
+            Some(("ui", what)) => {
+                // From the title a choice starts the flight; over a flight it hands the eye over.
+                let lines: &[&str] = match what {
+                    "tour" => &[r#"{"type":"start","tour":true}"#, r#"{"type":"tour","on":true}"#],
+                    "fly" => &[r#"{"type":"start","tour":false}"#, r#"{"type":"tour","on":false}"#],
+                    "menu" => &[r#"{"type":"menu","on":true}"#],
+                    "resume" => &[r#"{"type":"menu","on":false}"#],
+                    "title" => &[r#"{"type":"title"}"#],
+                    _ => &[],
+                };
+                for line in lines {
+                    channel().receive(line);
+                }
+            }
+            _ => {}
+        }
+    }
 }

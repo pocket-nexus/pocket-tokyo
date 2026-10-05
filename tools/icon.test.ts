@@ -40,10 +40,12 @@ test("no icon file is tracked outside vendor/", () => {
   expect(icons).toEqual([]);
 });
 
-test("PSP: Psp.toml names Pocket3D's ICON0.PNG", () => {
+test("PSP: Psp.toml and the EBOOT packer name Pocket3D's ICON0.PNG", () => {
   const icon = read("psp/Psp.toml").match(/^xmb_icon_png\s*=\s*"([^"]+)"/m)?.[1];
   // cargo-psp reads the path from the crate's directory.
   expect(resolve(ROOT, "psp", icon ?? "")).toBe(resolve(POCKET3D_ICON.psp));
+  // tools/psp.ts packs the EBOOT again, to ask for large memory: pack-pbp's third argument is ICON0.PNG.
+  expect(read("tools/psp.ts")).toMatch(/pack-pbp \$\{out\} \$\{sfo\} \$\{POCKET3D_ICON\.psp\} /);
 });
 
 test("PS Vita: every VPK is packaged with POCKET3D_ICON.vita", () => {

@@ -44,6 +44,12 @@ impl Camera {
         forward(self.yaw, self.pitch)
     }
 
+    /// Turns the view outright, radians: a finger dragging the picture.
+    pub fn turn_by(&mut self, yaw: f32, pitch: f32) {
+        self.yaw = wrap_angle(self.yaw + yaw);
+        self.pitch = clamp(self.pitch + pitch, -1.5, 1.2);
+    }
+
     /// One step of free flight. `top(x, z)`: the height of whatever stands at a point.
     pub fn fly(&mut self, inp: &Input, dt: f32, top: impl Fn(f32, f32) -> f32) {
         // Turning eases in and out, so a flick of the stick does not jerk the picture.

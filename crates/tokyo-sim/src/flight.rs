@@ -41,6 +41,13 @@ pub struct Flight {
     /// Metres the tour's eye is lifted above its own path, and the height the free camera keeps above.
     lift: f32,
     floor: f32,
+    /// The tour had the eye at the last step.
+    toured: bool,
+    /// The eye on its way back to the tour: where it left from, the point it looked at, how far it has come
+    /// (0…1) and in how many seconds it arrives.
+    join: Option<(V3, V3, f32, f32)>,
+    /// Metres the eye is held up on that way, over what stands under it.
+    join_lift: f32,
     /// Numbers a device reads for itself: `name=value` words this flight does not know.
     pub extra: Vec<(u32, f32)>,
 }
@@ -101,6 +108,9 @@ impl Flight {
             held: u32::MAX,
             lift: -1.0,
             floor: f32::MIN,
+            toured: true,
+            join: None,
+            join_lift: 0.0,
             extra: Vec::new(),
         }
     }
@@ -205,9 +215,17 @@ impl Flight {
             }
             h
         };
-        if self.tour_on && !self.tour.is_empty() {
+        let touring = self.tour_on && !self.tour.is_empty();
+        // Handed back to the tour, the eye travels to the tour's path: it does not cut there.
+        if touring && !self.toured {
+            let (to, _) = self.tour.at(self.tour_at);
+            let from = self.cam.pos;
+            self.join = Some((from, from + self.cam.look() * 400.0, 0.0, clamp((to - from).len() / 400.0, 1.5, 5.0)));
+        }
+        self.toured = touring;
+        if touring {
             self.tour_at += dt;
-            let (mut eye, target) = self.tour.at(self.tour_at);
+            let (mut eye, mut target) = self.tour.at(self.tour_at);
             // What the path must clear, here and over the two seconds ahead: the eye starts to rise before it
             // reaches a tower and comes down after it, in a slope, never a step.
             let mut need = 0.0f32;
@@ -217,6 +235,21 @@ impl Flight {
             }
             self.lift = if self.lift < 0.0 { need } else { ease(self.lift, need, 1.6, dt) };
             eye.y += self.lift;
+            let mut held = 0.0;
+            if let Some((from, looked, t, seconds)) = &mut self.join {
+                *t += dt / *seconds;
+                if *t >= 1.0 {
+                    self.join = None;
+                } else {
+                    let k = *t * *t * (3.0 - 2.0 * *t);
+                    eye = *from + (eye - *from) * k;
+                    target = *looked + (target - *looked) * k;
+                    held = max(around(eye.x, eye.z) + clear - eye.y, 0.0);
+                }
+            }
+            // Between the two paths the eye keeps above what it crosses, by a slope up and a slope down.
+            self.join_lift = ease(self.join_lift, held, 3.0, dt);
+            eye.y += self.join_lift;
             self.cam = Camera::looking(eye, target);
             self.floor = f32::MIN;
         } else {
@@ -227,6 +260,8 @@ impl Flight {
             let floor = self.floor;
             self.cam.fly(inp, dt, |_, _| floor);
             self.lift = -1.0;
+            self.join = None;
+            self.join_lift = 0.0;
         }
     }
 
@@ -272,5 +307,16 @@ mod tests {
             last = f.cam.pos.y;
         }
         assert!(last > 500.0);
+        // Taken off the tour and handed back, the eye travels to the path: no frame cuts to it.
+        f.control("fly=-800,400,900,0,100,0");
+        f.step(&Input::default(), 0, 1.0 / 30.0, |_, _| 0.0);
+        f.control("tour=1");
+        let mut last = f.cam.pos;
+        for _ in 0..300 {
+            f.step(&Input::default(), 0, 1.0 / 30.0, |_, _| 0.0);
+            assert!((f.cam.pos - last).len() < 40.0, "the eye cut {} m to the tour", (f.cam.pos - last).len());
+            last = f.cam.pos;
+        }
+        assert!(f.join.is_none());
     }
 }
