@@ -1,6 +1,6 @@
 # Pocket Tokyo
 
-Tokyo, flown over on a PS Vita, a PSP and a Nintendo 3DS. The city is the real one: 14 753 buildings of the Shiba district around Tokyo Tower, from Japan's open 3D city model (Project PLATEAU), OpenStreetMap and the national elevation survey. The sun crosses the sky, the shadows turn with it, the windows and the street lamps come on at dusk, and on the Vita the traffic runs on the real road graph. **960 × 544 with 4× multisampling at 60 frames per second on the Vita; 30 frames per second on the PSP and the 3DS.**
+Tokyo, flown over on a PS Vita, a PSP, a Nintendo 3DS and an iPod touch 4. The city is the real one: 14 753 buildings of the Shiba district around Tokyo Tower, from Japan's open 3D city model (Project PLATEAU), OpenStreetMap and the national elevation survey. The sun crosses the sky, the shadows turn with it, the windows and the street lamps come on at dusk, and on the Vita the traffic runs on the real road graph. **960 × 544 with 4× multisampling at 60 frames per second on the Vita; 480 × 320 with 4× multisampling at 60 on the iPod touch; 30 frames per second on the PSP and the 3DS.**
 
 This repository is private until its owner says otherwise. Compiled city data keeps the terms of its sources ([Attribution](#attribution)).
 
@@ -9,17 +9,18 @@ This repository is private until its owner says otherwise. Compiled city data ke
 | PS Vita | 960 × 544, 4× MSAA, shadows that follow the clock, night glow | GXM, programs compiled on the device | 150 s of the tour from 15:36 to 20:04, with the traffic and the interface: 9 010 frames, **0 late**, worst frame 17.6 ms, 86 800 to 200 200 triangles a frame (mean 158 200), 222 draws |
 | PSP | 480 × 272, shadows that follow the clock | GE, fixed function, one display list a frame | 150 s from the title into the tour, with the interface over it (PSPLINK, 333 MHz): 4 500 frames, **5 late** (3 of them in the first 5 s, while the tour's first cells are read), worst frame 50 ms, 22 800 to 42 100 triangles a frame (mean 37 600), 1 255 draws |
 | Nintendo 3DS | 400 × 240 on the upper screen, shadows that follow the clock; the area from above and the day as a bar on the lower one | PICA200: four vertex programs, three combiner stages | Old 3DS, 90 s of the tour with the interface on both screens: 2 728 frames, **0 late**, 21 400 to 53 600 triangles a frame (mean 40 000), 276 draws, 17.1 ms of CPU and 17.5 ms of GPU a frame |
+| iPod touch 4 | 480 × 320, 4× MSAA, shadows that follow the clock, the tower's lamps by night | OpenGL ES 2 on the SGX535: seven programs | 150 s of the tour with the interface over it, from 15:35 to 20:05 (iOS 6.1.6): 8 965 frames, **37 late** (0.41 %), worst frame 39.8 ms, 16 600 to 27 500 triangles a frame (mean 22 200), 205 draws |
 
 The city is modelled once as Three.js content that runs in a browser, and a compiler lowers it to what one console draws:
 
 - **`web/`** is the model: [Procedural Tokyo](https://github.com/jeantimex/tokyo) by Yong Su (MIT), with its pipeline from public records to tiles (`web/tools/pipeline`) and its three.js client. `web/src/pocket/` adds the export page.
-- **`crates/tokyo-cook`** is the city compiler: CityIR in, one pack and a compile receipt out, for a device profile (`profiles/vita60.json`, `psp30.json`, `n3ds30.json`).
+- **`crates/tokyo-cook`** is the city compiler: CityIR in, one pack and a compile receipt out, for a device profile (`profiles/vita60.json`, `psp30.json`, `n3ds30.json`, `ipod60.json`).
 - **`crates/tokyo-pack`** is the pack: tables, vertex layouts and sections shared by the compiler and the runtimes.
 - **`crates/tokyo-sim`** is what moves, the same on every device: the camera and its tour, the clock and the sun, the sweep that turns heights into shadows, the traffic; and what a frame draws: the cells, blocks and regions in view at their levels of detail.
 - **`ui/`** is the interface: one PocketJS app, compiled for each device and drawn over the city by every runtime. **`crates/tokyo-interface`** is the renderer's side of it and the flow around a flight (the title, the flight, the menu).
-- **`vita/`**, **`psp/`** and **`n3ds/`** draw a pack.
+- **`vita/`**, **`psp/`**, **`n3ds/`** and **`ipod/`** draw a pack. The iPod touch's core is the 3DS's Rust source built for `armv7-apple-ios`.
 
-PocketJS (pinned in `vendor/pocketjs`) supplies the device toolchains, the dev host, the GXM kernel and packaging. It also supplies what every Pocket3D game shows: the title card at launch and **the app icon in the console's launcher** (`vendor/pocketjs/engine/pocket3d/icon/`: 144 × 80 for the XMB, 128 × 128 for the Vita's bubble, 48 × 48 and 24 × 24 for the 3DS). This repository holds no icon file; `psp/assets/pic1.png` and the Vita's LiveArea pictures are captures of this game.
+PocketJS (pinned in `vendor/pocketjs`) supplies the device toolchains, the dev host, the GXM kernel and packaging. It also supplies what every Pocket3D game shows: the title card at launch and **the app icon in the console's launcher** (`vendor/pocketjs/engine/pocket3d/icon/`: 144 × 80 for the XMB, 128 × 128 for the Vita's bubble, 48 × 48 and 24 × 24 for the 3DS, 57 × 57 and 114 × 114 for SpringBoard). This repository holds no icon file; `psp/assets/pic1.png` and the Vita's LiveArea pictures are captures of this game.
 
 ## From records to a frame
 
@@ -106,6 +107,7 @@ The PSP has 24 MB and no programs; the 3DS has vertex programs, three texture un
 - **The near level is prisms too**, from a raster of 2 m, and each cell's near level is one record: its vertices, its indices and a picture of its own ground (0.5 m a texel on the PSP, 1 m on the 3DS). A device keeps the records of the cells before the eye in 40 slots; a thread reads them while the frame thread waits for the GPU. A cell that has not arrived is drawn at the mid level. The rest of the pack stays in memory: 10 MB on the PSP.
 - **No vertex has a normal.** Walls and painted geometry are ordered by the sector of the compass they face (16), at every level. The PSP draws one sector per draw with the GE's ambient colour as its light; the 3DS keeps the sector in the vertex and picks one of 17 lights in its vertex program. A ground vertex is its position and what it sees of the sky: 8 bytes.
 - **Day and night.** PSP: every picture is 8-bit indices with a day palette and a night palette, clustered over both colours of a texel at once; the palette the GE reads is their mix by the hour. 3DS: the ground in ETC1 by day, and the night as light: the lamps' light is one texture over the whole city, added by a combiner stage; the facades have a second picture of what their windows emit.
+- **The iPod touch takes the 3DS's vertices** (target `ipod`) and its pictures as 16-bit texels in row order: a block's ground at 512² (1 m a texel), a cell's at 256² (0.5 m), the facades by day and what their windows emit, the lamps' light. Nothing limits the pack to 32 MiB there: it is 177 MB, 134 MB of it the cells' records, of which 40 are in memory at a time. A wall vertex's sector byte also carries, in its upper three bits, how late in the dusk the building's rooms come on.
 - **Shadows.** Both sweep the pack's heights (4 m a cell) for the sun's direction on a thread of low priority, when the sun has moved a degree. PSP: ground pictures keep to 128 colours, the upper half of each palette is the lower half in shadow, and the thread sets the top bit of the indices where the ground is in shadow. 3DS: the result is an 8-bit texture over the whole city, multiplied in by a combiner stage.
 
 ## Landmarks
@@ -119,6 +121,8 @@ A landmark is a building the reference builds member by member from a model of i
 | far | the outline, no thinner than 3.2 m | 564 |
 
 A model for another landmark reports its members the same way and needs nothing else in the compiler or on a device. The Vita draws the reference's own triangles of the tower.
+
+A profile that gives `landmarks.lamps` a size per level also gets the model's lamps: each is three squares crossed, in the lamp's colour with alpha 255, which a vertex program reads as "shines by itself once the night has come". The iPod touch's profile does (118 lamps on the tower: 4 096, 2 440 and 1 272 triangles); a machine that lights a group of faces with one colour has no use for them.
 
 ## The frame on the PSP
 
@@ -140,6 +144,17 @@ A model for another landmark reports its members the same way and needs nothing 
 - **The lower screen** is the interface's second surface, a colour target of its own: the area from above with the eye's mark, the Menu and Tour keys, the day as a bar a stylus turns, and the lists. The upper surface is drawn over the city every frame; the lower one on the frames its list differs from the one it was last drawn from, **8 times a second on the tour**.
 - **A turn of the guest takes 12.3 ms on an Old 3DS** (its script 8.3 ms, layout and the two lists 4.1 ms) and is taken 15 times a second during a flight: 6.2 ms a frame. The tour over the same hours, 90 s, before and with the interface: **0 late frames in 2 717 and in 2 728**; CPU 9.7 ms → 17.1 ms a frame; GPU 16.2 ms → 17.5 ms mean, 21.2 ms → 22.6 ms at most. Opening a list builds its rows in one turn of up to 49 ms.
 - The guest takes 4.5 MB of heap and 5.0 MB of linear memory; 12.3 MB of linear memory stay free. The `.3dsx` is 32.03 MB with the bundle (0.26 MB of script, 0.70 MB of pak) in its ROMFS; the wire installs up to 33.55 MB (32 MiB).
+
+## The frame on the iPod touch
+
+`ipod/README.md` has the loop and the measurements in full.
+
+- The 3DS's passes as fragment programs, into a target with four samples a pixel that is resolved into the screen's buffer. Ground: (light × shadow + lamps × night) × picture; by day the program reads no lamps and by night no shadows. Walls: light × tint × facade, plus what the rooms emit by night. Haze is the Vita's formula, per vertex.
+- **A flight holds one refresh a frame up to about 34 000 triangles** with four samples (about 50 000 with one). Drawn alone, a frame takes the GPU 5.9 ms plus 0.39 ms per 1 000 triangles; consecutive frames overlap in it.
+- **The interface is one more read in every program of the scene**, of its texture at the pixel's own place. As a blended quad over the scene it left 38 % of the tour's frames late, and as a pass of its own 49 %; read in the programs, 12 % at the same 32 000 triangles. The budget with the interface is 24 000: it takes 8 000 triangles. The guest takes a turn 13 times a second (1.0 ms) and its texture is redrawn 11 times a second (5.1 ms of the CPU).
+- **Every vertex attribute starts on a 4-byte boundary.** With the two bytes of light at offset 6 read as an attribute of their own, the driver copied and converted vertices at every draw: 242 draws took 34.7 ms of the CPU, and 3.3 ms once those bytes were read with the two before them.
+- **Every colour in a fragment program is `lowp`.** With `mediump` intermediates a night frame of 43 000 triangles (one sample a pixel) missed every eighth refresh and a dusk frame every fourth; in `lowp` the same frames miss none.
+- A cell's record and the shadows reach the GPU on the render thread, one cell and one strip of the shadows a frame. The shadows have two textures, and a sweep is uploaded into the one no frame reads: a tile-based driver copies a texture that a queued frame reads before it writes into it.
 
 ## The interface
 

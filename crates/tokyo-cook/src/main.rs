@@ -220,7 +220,7 @@ impl Frame<'_> {
                 // and every top is lit as one group.
                 Target::Psp => Raw::from(&[&psp565([ao; 3]), &s16(pos[0]), &s16(pos[1]), &s16(pos[2])]),
                 // The PICA200: position, then what the point sees of the sky. Its program lights every top alike.
-                Target::Pica => Raw::from(&[&s16(pos[0]), &s16(pos[1]), &s16(pos[2]), &[ao, 0]]),
+                Target::Pica | Target::Gles => Raw::from(&[&s16(pos[0]), &s16(pos[1]), &s16(pos[2]), &[ao, 0]]),
             }
         });
         let _ = n8;
@@ -241,6 +241,9 @@ impl Frame<'_> {
                 }
                 // (the sector the wall faces stands in for its normal: the program holds a light per sector)
                 Target::Pica => Raw::from(&[&s16(pos[0]), &s16(pos[1]), &s16(pos[2]), &[ao, w.sector], &[w.color[0], w.color[1], w.color[2], w.gain], &uv[0].to_le_bytes(), &uv[1].to_le_bytes()]),
+                // (a vertex program of OpenGL ES can take a byte apart: over the sector's five bits, three say how
+                // late in the dusk the building's rooms come on)
+                Target::Gles => Raw::from(&[&s16(pos[0]), &s16(pos[1]), &s16(pos[2]), &[ao, w.sector | (w.late >> 5) << 5], &[w.color[0], w.color[1], w.color[2], w.gain], &uv[0].to_le_bytes(), &uv[1].to_le_bytes()]),
             }
         });
         (v, w.p)
@@ -255,7 +258,7 @@ impl Frame<'_> {
                     let c = [0, 1, 2].map(|c| (s.color[c] as u16 * ao as u16 / 255) as u8);
                     Raw::from(&[&psp565(c), &s16(pos[0]), &s16(pos[1]), &s16(pos[2])])
                 }
-                Target::Pica => Raw::from(&[&s16(pos[0]), &s16(pos[1]), &s16(pos[2]), &[ao, city::solid_sector(&s.p)], &s.color]),
+                Target::Pica | Target::Gles => Raw::from(&[&s16(pos[0]), &s16(pos[1]), &s16(pos[2]), &[ao, city::solid_sector(&s.p)], &s.color]),
             }
         });
         (v, s.p)
@@ -809,7 +812,7 @@ fn run() -> Result<(), String> {
     // ---- a handheld's landmarks: a model at each level of detail, made from the members the export recorded,
     // in the frame of the block the landmark stands in
     let marks = if streamed { landmark::read(&input.join("landmarks.cir"))? } else { Vec::new() };
-    let mark_rule = |lod: usize| landmark::Rule { rank: 2 - lod as u8, thick: f(&profile["landmarks"], "thick", lod, [0.0, 1.6, 3.2][lod]) };
+    let mark_rule = |lod: usize| landmark::Rule { rank: 2 - lod as u8, thick: f(&profile["landmarks"], "thick", lod, [0.0, 1.6, 3.2][lod]), lamps: f(&profile["landmarks"], "lamps", lod, 0.0) };
     let mut landmarks: Vec<Landmark> = Vec::new();
     let mut mark_meta: Vec<Value> = Vec::new();
     let open_sky = heights::Heights { x0: 0.0, z0: 0.0, step: 1.0, w: 1, h: 1, data: vec![f32::NEG_INFINITY] };
@@ -948,7 +951,7 @@ fn run() -> Result<(), String> {
             htex.resize((htex.len() + 15) & !15, 0);
         }
         let size = [profile["facade"]["size"][0].as_u64().unwrap_or(512) as usize, profile["facade"]["size"][1].as_u64().unwrap_or(128) as usize];
-        let (day, night) = handheld::facades(&tex::load(&input.join("facade.day.png"))?, &tex::load(&input.join("facade.night.png"))?, size[0], size[1], 0.7354, target == Target::Pica);
+        let (day, night) = handheld::facades(&tex::load(&input.join("facade.day.png"))?, &tex::load(&input.join("facade.night.png"))?, size[0], size[1], 0.7354, target != Target::Psp);
         let (bytes, levels) = handheld::pair(target, handheld::Kind::Facade, day, night, usize::MAX);
         hpic.push(pack::HandPicture { offset: htex.len() as u32, size: bytes.len() as u32, width: size[0] as u16, height: size[1] as u16, levels: levels as u32 });
         htex.extend_from_slice(&bytes);
@@ -1136,12 +1139,12 @@ fn run() -> Result<(), String> {
         w.add(pack::FACN, facn);
         w.add(pack::LAMP, pack::slice_bytes(&lamp_map).to_vec());
     } else {
-        if target == Target::Pica {
-            // The lamps' light as a texture over the stored grid of heights, 1 024 texels a side: the 3DS adds
-            // it to the ground by night.
+        if target != Target::Psp {
+            // The lamps' light as a texture over the stored grid of heights, 1 024 texels a side: the 3DS and
+            // the iPod touch add it to the ground by night.
             let side = 1024;
             if gw > side || gh > side {
-                return Err("the grid of heights is wider than a texture of the 3DS".into());
+                return Err("the grid of heights is wider than the texture of the lamps' light".into());
             }
             let mut texels = vec![0u16; side * side];
             for j in 0..gh {
@@ -1161,7 +1164,7 @@ fn run() -> Result<(), String> {
                     texels[j * side + i] = (q(sum[0], 31.0) << 11) | (q(sum[1], 63.0) << 5) | q(sum[2], 31.0);
                 }
             }
-            w.add(pack::LAMP, handheld::pica_tile(&texels, side, side));
+            w.add(pack::LAMP, if target == Target::Pica { handheld::pica_tile(&texels, side, side) } else { pack::slice_bytes(&texels).to_vec() });
         }
         w.add(pack::HPIC, pack::slice_bytes(&hpic).to_vec());
         w.add(pack::HTEX, htex);

@@ -1,4 +1,6 @@
-//! C interface of the 3DS host (`../src/core.h` declares the same functions).
+//! C interface of the 3DS host (`../src/core.h` declares the same functions),
+//! and of the iPod touch's (`ipod/core` builds this source for
+//! `armv7-apple-ios`; what differs there is under `target_vendor = "apple"`).
 //!
 //! The host owns the GPU, the pad and storage; it hands the pack's tables in
 //! once and then asks, each frame, where the eye is, what the light is and
@@ -46,6 +48,19 @@ const RETIRED: u32 = 3;
 /// A cell is read when the eye comes this near the distance at which it would be drawn, and dropped when it
 /// has left that by twice as much.
 const AHEAD: f32 = 48.0;
+
+/// The screen's width over its height, and what the status calls the machine.
+#[cfg(not(target_vendor = "apple"))]
+const SCREEN: (f32, &str) = (400.0 / 240.0, "3ds");
+#[cfg(target_vendor = "apple")]
+const SCREEN: (f32, &str) = (480.0 / 320.0, "ipod");
+
+/// Frames between two lines of the numbers in flight: 15 lines a second at the 3DS's 30 frames, 12 at the
+/// iPod touch's 60 (each line there is a redraw of the interface's texture).
+#[cfg(not(target_vendor = "apple"))]
+const NUMBERS_EVERY: u32 = 2;
+#[cfg(target_vendor = "apple")]
+const NUMBERS_EVERY: u32 = 5;
 
 /// A slot, as the host's reading thread sees it: it reads `size` bytes at `offset` of the pack for a slot that
 /// is `WANTED` and sets it `READY`.
@@ -201,9 +216,8 @@ pub unsafe extern "C" fn tk_init(p: *const Pack, budget: u32) -> *const c_char {
     let place: String = core::str::from_utf8(meta).ok().and_then(|m| m.split("\"name\":\"").nth(1)).and_then(|m| m.split('"').next()).unwrap_or("Tokyo").into();
     let mut flight = Flight::new(city.view, city.hour, tour, budget, (600.0, 1600.0), 2);
     flight.clearance = 30.0;
-    // The numbers in flight 15 times a second: every other frame at this machine's pace.
     let mut session = Session::new();
-    session.numbers_every = 2;
+    session.numbers_every = NUMBERS_EVERY;
     *core::ptr::addr_of_mut!(APP) = Some(App {
         flight,
         session,
@@ -344,7 +358,7 @@ pub unsafe extern "C" fn tk_choose(lists: *mut *const Item, lengths: *mut u32) {
             s.state.store(RETIRED, Ordering::Release);
         }
     }
-    let vp = mat::mul(&mat::perspective(fov, 400.0 / 240.0, 3.0, 12000.0), &mat::view(eye, look, 0.0));
+    let vp = mat::mul(&mat::perspective(fov, SCREEN.0, 3.0, 12000.0), &mat::view(eye, look, 0.0));
     let planes = mat::planes(&vp);
     let tables = view::Tables { city: &a.city, regions: a.regions, blocks: a.blocks, cells: a.cells, batches: a.batches, spans: a.spans, landmarks: a.landmarks };
     let slot_of = &a.slot_of;
@@ -424,7 +438,9 @@ pub extern "C" fn tk_drew(tris: u32) {
     app().flight.drew(tris);
 }
 
-/// Texels of one row of 8-texel squares in the PICA200's order.
+/// Where a texel of a square texture is stored. The PICA200: 8-texel squares in rows from the last, each in
+/// Morton order.
+#[cfg(not(target_vendor = "apple"))]
 fn tiled(x: usize, y: usize, side: usize) -> usize {
     let fy = side - 1 - y;
     let mut m = 0;
@@ -435,10 +451,16 @@ fn tiled(x: usize, y: usize, side: usize) -> usize {
     ((fy / 8) * (side / 8) + x / 8) * 64 + m
 }
 
+/// OpenGL ES: rows, the first row first.
+#[cfg(target_vendor = "apple")]
+fn tiled(x: usize, y: usize, side: usize) -> usize {
+    y * side + x
+}
+
 /// The shadows of a direction of the sun, as a texture of 8-bit light over the grid of heights: 255 in the
 /// sun, `shade` of it where the ground stands two metres or more under a shadow. `swept` is scratch for the
-/// grid; `texture` is `side` texels square, stored as the PICA200 stores it. May run on another thread than
-/// the frame's.
+/// grid; `texture` is `side` texels square, stored as the machine's GPU reads it (`tiled`). May run on another
+/// thread than the frame's.
 ///
 /// # Safety
 /// After `tk_init`; `swept` holds the grid, `texture` `side * side` bytes.
@@ -485,7 +507,8 @@ pub unsafe extern "C" fn tk_status(out: *mut u8, cap: u32, perf: *const Perf, ex
     let mut s = String::with_capacity(1536);
     let _ = write!(
         s,
-        "{{\"target\":\"3ds\",\"stage\":\"running\",\"frames\":{},\"frameMs\":{:.2},\"worstMs\":{:.2},\"late\":{},\"cpuMs\":{:.2},\"gpuMs\":{:.2},\"tris\":[{},{},{},{}],\"drawn\":{},\"draws\":{},\"places\":[{},{},{}],\"turned\":{},\"reach\":[{:.0},{:.0}],\"governor\":{{\"on\":{},\"budget\":{},\"scale\":{:.3}}},\"clock\":{{\"hour\":{:.3},\"rate\":{:.3},\"night\":{:.2}}},\"tour\":{{\"on\":{},\"at\":{:.1},\"seconds\":{:.1}}},\"eye\":[{:.1},{:.1},{:.1}],\"look\":[{:.3},{:.3},{:.3}],\"cells\":{{\"ready\":{},\"wanted\":{}}}",
+        "{{\"target\":\"{}\",\"stage\":\"running\",\"frames\":{},\"frameMs\":{:.2},\"worstMs\":{:.2},\"late\":{},\"cpuMs\":{:.2},\"gpuMs\":{:.2},\"tris\":[{},{},{},{}],\"drawn\":{},\"draws\":{},\"places\":[{},{},{}],\"turned\":{},\"reach\":[{:.0},{:.0}],\"governor\":{{\"on\":{},\"budget\":{},\"scale\":{:.3}}},\"clock\":{{\"hour\":{:.3},\"rate\":{:.3},\"night\":{:.2}}},\"tour\":{{\"on\":{},\"at\":{:.1},\"seconds\":{:.1}}},\"eye\":[{:.1},{:.1},{:.1}],\"look\":[{:.3},{:.3},{:.3}],\"cells\":{{\"ready\":{},\"wanted\":{}}}",
+        SCREEN.1,
         p.frames,
         p.frame,
         p.worst,
@@ -533,6 +556,26 @@ pub unsafe extern "C" fn tk_status(out: *mut u8, cap: u32, perf: *const Perf, ex
     core::ptr::copy_nonoverlapping(s.as_ptr(), out, n);
     *out.add(n) = 0;
     n as u32
+}
+
+/// A frame of the Pocket3D title card for a host with no frame buffer a CPU writes: `tick`'s frame as RGBA
+/// rows into `pixels`. Returns 0 when the card is over, 2 when the frame is the one drawn at tick `shown`
+/// (nothing is written), 1 when it drew.
+///
+/// # Safety
+/// `pixels` has room for `width * height * 4` bytes.
+#[cfg(target_vendor = "apple")]
+#[no_mangle]
+pub unsafe extern "C" fn tk_card(pixels: *mut u8, width: u32, height: u32, tick: u32, shown: u32) -> u32 {
+    use pocket3d_title::{draw, level, Layout, Surface, TICKS};
+    if tick >= TICKS {
+        return 0;
+    }
+    if shown < TICKS && level(tick) == level(shown) {
+        return 2;
+    }
+    let mut surface = Surface { pixels: core::slice::from_raw_parts_mut(pixels, (width * height * 4) as usize), width, height, stride: width, layout: Layout::Rgba8 };
+    draw(&mut surface, tick) as u32
 }
 
 /// Whether the tour carries the eye, and the top of what stands under it (for the host's own displays).

@@ -151,4 +151,9 @@ uint32_t tk_interface_open(void);
 void tk_report(const TkPerf *perf);
 /* Words of a control text that are the flow's: mode=title|flight|menu, ui=tour|fly|menu|resume|title. */
 void tk_remote(const char *text, uint32_t len);
+#ifdef __APPLE__
+/* The iPod touch (ipod/core builds the same source): a frame of the Pocket3D title card as RGBA rows.
+ * 0: the card is over; 1: drawn; 2: the frame is the one drawn at tick `shown`. */
+uint32_t tk_card(uint8_t *pixels, uint32_t width, uint32_t height, uint32_t tick, uint32_t shown);
+#endif
 #endif

@@ -238,8 +238,8 @@ function Controls(props: { flight: Flight }) {
       <Touchable class="absolute" style={{ insetR: 16, insetT: 12, width: 76, height: 46 }} onTap={() => setTiming(!timing())}>
         <Clock host={host} />
       </Touchable>
-      <View class="absolute" style={{ insetR: 106, insetT: 16 }}>
-        <Button label={host.tour() ? "TOUR ON" : "TOUR"} width={84} height={36} strong={host.tour()} onPress={() => host.send({ type: "tour", on: !host.tour() })} />
+      <View class="absolute" style={{ insetR: 106, insetT: 12 }}>
+        <Button label={host.tour() ? "TOUR ON" : "TOUR"} width={84} height={TARGET} strong={host.tour()} onPress={() => host.send({ type: "tour", on: !host.tour() })} />
       </View>
       <View class="absolute rounded-lg" style={{ insetL: (W - BAR) / 2, insetT: 66, width: BAR, height: 40, bgColor: GLASS, borderWidth: 1, borderColor: HAIRLINE, display: timing() ? 0 : 1 }}>
         <TimeBar flight={props.flight} width={BAR} left={(W - BAR) / 2} />

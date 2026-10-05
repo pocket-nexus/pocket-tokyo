@@ -215,6 +215,22 @@ fn pica_pair(day: Image, night: Image, levels: usize) -> Vec<u8> {
     out
 }
 
+/// A picture as OpenGL ES takes it: every level as 16-bit texels (red in the high bits) in row order, the
+/// image's first row first.
+fn rows(img: Image, levels: usize) -> Vec<u8> {
+    let mut out = Vec::new();
+    let mut img = img;
+    for level in 0..levels {
+        for p in img.rgba.chunks_exact(4) {
+            out.extend_from_slice(&(((p[0] as u16 >> 3) << 11) | ((p[1] as u16 >> 2) << 5) | (p[2] as u16 >> 3)).to_le_bytes());
+        }
+        if level + 1 < levels {
+            img = img.half();
+        }
+    }
+    out
+}
+
 /// Levels a picture of this size is stored at: down to 16 texels on its short side.
 pub fn levels_of(w: usize, h: usize) -> usize {
     let mut n = 1;
@@ -244,6 +260,7 @@ fn pica_ground(day: Image, levels: usize) -> Vec<u8> {
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
     /// From above. PSP: 128 colours, the other half of the palette left to the device. 3DS: ETC1, by day only.
+    /// iPod touch: 16-bit texels, by day only.
     Ground,
     Facade,
 }
@@ -253,8 +270,26 @@ pub fn pair(target: Target, kind: Kind, day: Image, night: Image, most: usize) -
     let levels = levels_of(day.w, day.h).min(most);
     let bytes = match (target, kind) {
         (Target::Psp, _) => psp_pair(day, night, levels, if kind == Kind::Ground { 128 } else { 256 }),
+        // (the ground by night is the device's own work there too: the night's light and the lamps' on the picture)
+        (Target::Gles, Kind::Ground) => rows(day, levels),
+        (Target::Gles, Kind::Facade) => [rows(day, levels), rows(night, levels)].concat(),
         (_, Kind::Ground) => pica_ground(day, levels),
         _ => pica_pair(day, night, levels),
     };
     (bytes, levels)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn opengl_es_takes_rows_from_the_first() {
+        // Red, green on the first row; blue, white on the second.
+        let img = Image { w: 2, h: 2, rgba: vec![255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 255] };
+        let (bytes, levels) = pair(Target::Gles, Kind::Ground, img, Image::blank(2, 2, [0; 3]), usize::MAX);
+        assert_eq!(levels, 1);
+        let texels: Vec<u16> = bytes.chunks_exact(2).map(|b| u16::from_le_bytes([b[0], b[1]])).collect();
+        assert_eq!(texels, [0xf800, 0x07e0, 0x001f, 0xffff]);
+    }
 }
