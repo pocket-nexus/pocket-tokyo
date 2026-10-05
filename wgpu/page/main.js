@@ -126,6 +126,8 @@ async function start() {
     const to = sized ?? all.find((s) => s.name === next.id);
     stage.show({ width: to.width, height: to.height, lower: of.auxiliary });
     shape = JSON.parse(tokyo.reshape(to.name, to.width, to.height, to.samples, to.budget, to.hz));
+    // (the turns a second the device's own host gives its interface)
+    const simHz = shape.turns;
     controls.device({ sticks: next.sticks, glyphs: of.glyphs });
     if (coarse || query.has("buttons")) controls.buttonsIn(stage.left, stage.right);
     document.getElementById("stage").toggleAttribute("data-stacked", innerHeight > innerWidth);
@@ -142,7 +144,7 @@ async function start() {
     tokyo.overlay_hide();
     if (query.get("interface") === "off") return tokyo.control("mode=flight");
     try {
-      const opened = await openInterface({ realm: beside("app-instance.html"), wasm: beside("pocketjs.wasm"), bundle: beside(`ui/${next.id}/tokyo.js`), pak: beside(`ui/${next.id}/tokyo.pak`), plan });
+      const opened = await openInterface({ realm: beside("app-instance.html"), wasm: beside("pocketjs.wasm"), bundle: beside(`ui/${next.id}/tokyo.js`), pak: beside(`ui/${next.id}/tokyo.pak`), plan, simHz });
       // (another device was chosen while this one's interface was read)
       if (device !== next) return opened.close();
       tokyo.interface_opened();
@@ -163,13 +165,15 @@ async function start() {
   // One frame: the flight, the guest's turn when it is worth one, its picture when that has changed, the scene.
   const frame = (now) => {
     const held = controls.read();
-    const ticks = tokyo.step(now, held.buttons, held.left[0], held.left[1], held.right[0], held.right[1]);
-    const turned = ui !== null && tokyo.guest_due(held.buttons, held.touching);
+    tokyo.step(now, held.buttons, held.left[0], held.left[1], held.right[0], held.right[1]);
+    // (a turn is offered as often as the device offers one, and is that many sixtieths of a second)
+    const ticks = ui !== null ? tokyo.guest_due(held.touching) : 0;
+    const turned = ticks > 0;
     if (turned) {
       const from = performance.now();
       const line = tokyo.heard();
       if (line) ui.send(line);
-      ui.turn(held.buttons, held.contacts, ticks);
+      ui.turn(tokyo.guest_buttons(), held.contacts, ticks);
       for (const said of ui.drain()) tokyo.say(said);
       const turnedAt = performance.now();
       if (ui.changed()) {

@@ -89,21 +89,30 @@ pub struct Shape {
     pub budget: u32,
     /// Frames a second.
     pub hz: u32,
+    /// The interface's turns a second: what the device's own host tells its guest (`globalThis.__simHz`).
+    pub turns: u32,
 }
 
 /// The screens of the handhelds this city runs on, with the frame each one's own build asks for
-/// (`BUDGET` in `psp/src/main.rs`, `vita/src/main.rs`, `n3ds/src/main.c` and `ipod/src/main.c`).
+/// (`BUDGET` in `psp/src/main.rs`, `vita/src/main.rs`, `n3ds/src/main.c` and `ipod/src/main.c`) and the
+/// turns a second its host gives the interface (`TURNS` in `psp/src/interface.rs`, `RATE` in
+/// `vita/src/interface.rs`, `rate` in `n3ds/src/guest.c`, `TURN_HZ` in `ipod/src/main.c`).
 /// Whatever the shape, the pack is the one that was opened: a shape changes how much of it a frame draws.
 pub const SHAPES: [Shape; 4] = [
-    Shape { name: "psp", width: 480, height: 272, samples: 4, budget: 42_000, hz: 30 },
-    Shape { name: "vita", width: 960, height: 544, samples: 4, budget: 200_000, hz: 60 },
-    Shape { name: "3ds", width: 400, height: 240, samples: 4, budget: 60_000, hz: 30 },
-    Shape { name: "ipod", width: 480, height: 320, samples: 4, budget: 24_000, hz: 60 },
+    Shape { name: "psp", width: 480, height: 272, samples: 4, budget: 42_000, hz: 30, turns: 30 },
+    Shape { name: "vita", width: 960, height: 544, samples: 4, budget: 200_000, hz: 60, turns: 30 },
+    Shape { name: "3ds", width: 400, height: 240, samples: 4, budget: 60_000, hz: 30, turns: 30 },
+    Shape { name: "ipod", width: 480, height: 320, samples: 4, budget: 24_000, hz: 60, turns: 60 },
 ];
 
 impl Shape {
     pub fn named(name: &str) -> Option<Shape> {
         SHAPES.iter().copied().find(|s| s.name == name)
+    }
+
+    /// Sixtieths of a second in one turn of the interface.
+    pub fn turn(&self) -> u32 {
+        60 / self.turns.clamp(1, 60)
     }
 
     /// Display refreshes a frame is shown for, at 60 a second.
@@ -231,6 +240,9 @@ pub struct App {
     last: Option<f64>,
     /// Ticks of the flight that time has passed for and no frame has taken yet.
     owed: f32,
+    /// What the guest is owed: ticks no turn of its has taken, and the buttons and the contact held at any
+    /// moment since a turn was last offered.
+    guest: (u32, u32, bool),
     average: f32,
     /// When the frame being made began, for what it costs.
     began: f64,
@@ -260,6 +272,7 @@ impl App {
             intervals: [0.0; WINDOW],
             last: None,
             owed: 0.0,
+            guest: (shape.turn(), 0, false),
             average: 1000.0 / shape.hz as f32,
             began: 0.0,
             trouble: String::new(),
@@ -344,12 +357,30 @@ impl App {
     /// replaces another (another screen's presentation) opens it again.
     pub fn interface_opened(&mut self) {
         unsafe { tokyo_interface::channel() }.open("pocket.overlay");
+        // (its first turn is this frame's, and nothing held before it was there is its to hear)
+        self.guest = (self.shape.turn(), 0, false);
     }
 
-    /// Whether the guest's next turn is worth taking (`tokyo_interface::Pace`). `buttons`: PocketJS's bits, as
-    /// the guest would be handed them; `touching`: a contact is on a surface it draws, or has just left.
-    pub fn guest_due(&self, buttons: u32, touching: bool) -> bool {
-        tokyo_core::tk_guest_due(buttons, touching as u32) != 0
+    /// The guest's turn in this frame, once a frame after [`App::step`]: the sixtieths of a second it is for
+    /// and the buttons it is handed (PocketJS's bits, held at any moment since a turn was last offered), or
+    /// `None` for a frame without one. `touching`: a contact is on a surface the guest draws, or has just
+    /// left.
+    ///
+    /// A turn is offered `shape.turns` times a second, as the device's own host offers it
+    /// (`Ui::turn` in `vita/src/interface.rs`), and is always that long; it is taken when it is worth its
+    /// cost (`tokyo_interface::Pace`). No more than two are owed: a guest that fell behind does not run
+    /// after the time.
+    pub fn guest_due(&mut self, touching: bool) -> Option<(u32, u32)> {
+        let turn = self.shape.turn();
+        let (owed, buttons, touched) = &mut self.guest;
+        *touched |= touching;
+        *owed = (*owed).min(2 * turn);
+        if *owed < turn {
+            return None;
+        }
+        *owed -= turn;
+        let (buttons, touched) = (core::mem::take(buttons), core::mem::take(touched));
+        (tokyo_core::tk_guest_due(buttons, touched as u32) != 0).then_some((turn, buttons))
     }
 
     /// The line of state the guest has not seen, for its turn (`ui/app/protocol.ts`).
@@ -378,8 +409,7 @@ impl App {
     // ---- a frame
 
     /// The first half of a frame at `now` (milliseconds on a clock that goes forward): what the interface
-    /// asked for since the last frame, then the flight. Returns the sixtieths of a second that passed, for
-    /// the guest's turn.
+    /// asked for since the last frame, then the flight. Returns the sixtieths of a second that passed.
     pub fn step(&mut self, now: f64, held: &Held) -> u32 {
         self.began = task::now();
         let interval = self.last.map(|last| (now - last) as f32);
@@ -392,6 +422,8 @@ impl App {
             // A frame is shown for its refreshes; one that took half a refresh more is late.
             p.late += (self.flying.is_some() && interval > (self.shape.pace() as f32 + 0.5) * 1000.0 / 60.0) as u32;
         }
+        self.guest.0 += ticks;
+        self.guest.1 |= held.buttons;
         let pad = self.shape.pad(held);
         if let Some(f) = &mut self.flying {
             unsafe {
@@ -500,7 +532,7 @@ impl App {
         let s = &self.shape;
         let _ = write!(
             extra,
-            "\"mode\":\"{}\",\"interface\":{},\"fps\":{:.3},\"shape\":{{\"name\":\"{}\",\"width\":{},\"height\":{},\"samples\":{},\"budget\":{},\"hz\":{}}},\"adapter\":\"{}\",\"trouble\":\"{}\"",
+            "\"mode\":\"{}\",\"interface\":{},\"fps\":{:.3},\"shape\":{{\"name\":\"{}\",\"width\":{},\"height\":{},\"samples\":{},\"budget\":{},\"hz\":{},\"turns\":{}}},\"adapter\":\"{}\",\"trouble\":\"{}\"",
             // (what the screen is for, as the interface is told, and whether a guest holds its channel)
             unsafe { tokyo_interface::channel() }.state.mode.name(),
             unsafe { tokyo_interface::channel() }.is_open(),
@@ -511,6 +543,7 @@ impl App {
             s.samples,
             s.budget,
             s.hz,
+            s.turns,
             self.gpu.adapter.replace(['"', '\\'], " "),
             trouble
         );

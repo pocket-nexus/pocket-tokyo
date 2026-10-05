@@ -25,7 +25,7 @@ use crate::app::{self, App, Held, Shape, SweepHere, Sweeper, SHAPES};
 use crate::pack::Tables;
 
 fn describe(s: &Shape) -> String {
-    format!("{{\"name\":\"{}\",\"width\":{},\"height\":{},\"samples\":{},\"budget\":{},\"hz\":{}}}", s.name, s.width, s.height, s.samples, s.budget, s.hz)
+    format!("{{\"name\":\"{}\",\"width\":{},\"height\":{},\"samples\":{},\"budget\":{},\"hz\":{},\"turns\":{}}}", s.name, s.width, s.height, s.samples, s.budget, s.hz, s.turns)
 }
 
 /// The screens the page can ask for, as a JSON array.
@@ -37,6 +37,8 @@ pub fn shapes() -> String {
 #[wasm_bindgen]
 pub struct Tokyo {
     app: App,
+    /// The buttons of the guest's turn in this frame.
+    handed: u32,
 }
 
 /// What reads the city beside the frames: the GPU the shell draws with, and the screen its programs are for.
@@ -77,7 +79,7 @@ impl Tokyo {
         if !prefs.is_empty() {
             app.prefs_stored(&prefs);
         }
-        Ok(Tokyo { app })
+        Ok(Tokyo { app, handed: 0 })
     }
 
     /// What reads the city for this shell.
@@ -132,10 +134,19 @@ impl Tokyo {
         self.app.interface_opened();
     }
 
-    /// Whether the guest's next turn is worth taking. `buttons`: PocketJS's bits, as the guest would be
-    /// handed them; `touching`: a contact is on a surface it draws, or has just left one.
-    pub fn guest_due(&self, buttons: u32, touching: bool) -> bool {
-        self.app.guest_due(buttons, touching)
+    /// The guest's turn in this frame, once a frame after `step`: the sixtieths of a second it is for, or 0
+    /// for a frame without one. A turn is offered as many times a second as the shape's `turns`, and taken
+    /// when it is worth its cost. `touching`: a contact is on a surface the guest draws, or has just left one.
+    pub fn guest_due(&mut self, touching: bool) -> u32 {
+        let (ticks, buttons) = self.app.guest_due(touching).unwrap_or((0, 0));
+        self.handed = buttons;
+        ticks
+    }
+
+    /// The buttons for the turn `guest_due` has just allowed: PocketJS's bits, held at any moment since a
+    /// turn was last offered.
+    pub fn guest_buttons(&self) -> u32 {
+        self.handed
     }
 
     /// The line of state the guest has not seen, for its turn.
@@ -169,7 +180,7 @@ impl Tokyo {
     pub fn reshape(&mut self, name: &str, width: u32, height: u32, samples: u32, budget: u32, hz: u32) -> Result<String, JsError> {
         let mut shape = Shape::named(name).ok_or_else(|| JsError::new("no such shape"))?;
         let or = |value: u32, fallback: u32| if value != 0 { value } else { fallback };
-        shape = Shape { name: shape.name, width: or(width, shape.width), height: or(height, shape.height), samples: or(samples, shape.samples), budget: or(budget, shape.budget), hz: or(hz, shape.hz) };
+        shape = Shape { name: shape.name, width: or(width, shape.width), height: or(height, shape.height), samples: or(samples, shape.samples), budget: or(budget, shape.budget), hz: or(hz, shape.hz), turns: shape.turns };
         self.app.reshape(shape);
         Ok(describe(&self.app.shape))
     }
