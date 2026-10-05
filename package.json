@@ -8,6 +8,7 @@
     "tokyo": "bun tools/tokyo.ts",
     "dev": "bun run --cwd web dev",
     "ui": "bun tools/ui.ts",
+    "wgpu": "bun tools/wgpu.ts",
     "test": "cargo test --workspace && bun test ./tools/icon.test.ts"
   },
   "devDependencies": {
