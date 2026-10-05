@@ -38,6 +38,9 @@ pub struct Flight {
     /// Metres the eye keeps above whatever stands under it and around it.
     pub clearance: f32,
     held: u32,
+    /// Metres the tour's eye is lifted above its own path, and the height the free camera keeps above.
+    lift: f32,
+    floor: f32,
     /// Numbers a device reads for itself: `name=value` words this flight does not know.
     pub extra: Vec<(u32, f32)>,
 }
@@ -96,6 +99,8 @@ impl Flight {
             seconds: 0.0,
             clearance: 14.0,
             held: u32::MAX,
+            lift: -1.0,
+            floor: f32::MIN,
             extra: Vec::new(),
         }
     }
@@ -203,10 +208,25 @@ impl Flight {
         if self.tour_on && !self.tour.is_empty() {
             self.tour_at += dt;
             let (mut eye, target) = self.tour.at(self.tour_at);
-            eye.y = max(eye.y, around(eye.x, eye.z) + clear);
+            // What the path must clear, here and over the two seconds ahead: the eye starts to rise before it
+            // reaches a tower and comes down after it, in a slope, never a step.
+            let mut need = 0.0f32;
+            for k in 0..6 {
+                let (p, _) = self.tour.at(self.tour_at + k as f32 * 0.4);
+                need = max(need, around(p.x, p.z) + clear - p.y);
+            }
+            self.lift = if self.lift < 0.0 { need } else { ease(self.lift, need, 1.6, dt) };
+            eye.y += self.lift;
             self.cam = Camera::looking(eye, target);
+            self.floor = f32::MIN;
         } else {
-            self.cam.fly(inp, dt, |x, z| around(x, z) + clear - crate::camera::CLEARANCE);
+            // The free camera's floor follows what stands around it at a pace, so that a tower ahead lifts the
+            // eye over a second and does not throw it.
+            let want = around(self.cam.pos.x, self.cam.pos.z) + clear - crate::camera::CLEARANCE;
+            self.floor = if self.floor == f32::MIN { want } else { ease(self.floor, want, 3.0, dt) };
+            let floor = self.floor;
+            self.cam.fly(inp, dt, |_, _| floor);
+            self.lift = -1.0;
         }
     }
 
@@ -244,5 +264,13 @@ mod tests {
         // The tour carries the eye, above what stands there.
         f.step(&Input::default(), 0, 0.5, |_, _| 300.0);
         assert!(f.tour_on && f.cam.pos.y >= 314.0);
+        // A tower that comes up on the path lifts the eye by a slope: no frame moves it more than a few metres.
+        let mut last = f.cam.pos.y;
+        for _ in 0..240 {
+            f.step(&Input::default(), 0, 1.0 / 30.0, |x, _| if x > 200.0 { 520.0 } else { 300.0 });
+            assert!((f.cam.pos.y - last).abs() < 12.0, "the eye jumped {} m in a frame", f.cam.pos.y - last);
+            last = f.cam.pos.y;
+        }
+        assert!(last > 500.0);
     }
 }
