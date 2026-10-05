@@ -26,15 +26,25 @@ export const HOURS: [string, number][] = [
   ["Night", 21 * 60],
 ];
 
-/** A row of a list. */
+/**
+ * A row of a list. What can change while the row stands (a switch, a named
+ * value, a label that says what a press would do) is a function: a list is
+ * built once, kept, and its rows are written in place. Building a list takes
+ * tenths of a second on the PSP.
+ */
 export interface Row {
-  label: string;
+  label: string | (() => string);
   /** A switch's state, or undefined for a row with a named value or none. */
-  on?: boolean;
+  on?: () => boolean;
   /** The named value of a choice, or what stands at the right of the row. */
-  value?: string;
+  value?: string | (() => string);
   /** A row that only informs takes no press and no focus mark. */
   press?: () => void;
+}
+
+/** What a row's member reads now. */
+export function read<T extends string | boolean>(member: T | (() => T)): T {
+  return typeof member === "function" ? member() : member;
 }
 
 /** The list over the city: the mode's own, or one opened from it. */
@@ -59,6 +69,8 @@ export interface Flight {
   note: Accessor<string>;
   /** The place the eye is at. */
   place: Accessor<string>;
+  /** The title's own rows and the menu's: a presentation may build them before either is first shown. */
+  lists: { title: Row[]; menu: Row[] };
   /** The renderer's `flow` setting, when it offers one. */
   flow: Accessor<Setting | undefined>;
   set(setting: Setting, value: number): void;
@@ -211,19 +223,31 @@ export function createFlight(host: Host, touch: boolean): Flight {
     setPrefs(next);
     host.send({ type: "prefs", value: JSON.stringify(next) });
   };
-  const row = (setting: Setting): Row => {
-    const label = LABELS[setting.key] ?? setting.key;
-    const choices = setting.choices;
-    if (!choices) return { label, on: !!setting.value, press: () => set(setting, setting.value ? 0 : 1) };
-    return { label, value: choices[setting.value] ?? "", press: () => set(setting, (setting.value + 1) % choices.length) };
+  // A setting's row stands while the renderer offers the setting: its state is read where it is shown.
+  const row = (key: string, choice: boolean): Row => {
+    const label = LABELS[key] ?? key;
+    const now = () => host.options().find((setting) => setting.key === key);
+    if (!choice) {
+      return { label, on: () => !!now()?.value, press: () => {
+        const setting = now();
+        if (setting) set(setting, setting.value ? 0 : 1);
+      } };
+    }
+    return { label, value: () => now()?.choices?.[now()!.value] ?? "", press: () => {
+      const setting = now();
+      if (setting?.choices) set(setting, (setting.value + 1) % setting.choices.length);
+    } };
   };
   const flow = createMemo(() => host.options().find((setting) => setting.key === "flow"));
+  // Which settings the renderer offers, each with whether it is a choice: the lists made of them are
+  // built again only when this changes, not when a setting's value does.
+  const offered = createMemo(() => host.options().map((setting) => `${setting.key}${setting.choices ? ":" : ""}`).join(" "));
   // The clock's own setting stands with the hours; the rest are the settings.
-  const settings = (): Row[] => host.options().filter((setting) => setting.key !== "flow").map(row);
-  const hours = (): Row[] => [
+  const settings = createMemo<Row[]>(() => offered().split(" ").filter((key) => key && key !== "flow:").map((key) => row(key.replace(":", ""), key.endsWith(":"))));
+  const hours = createMemo<Row[]>(() => [
     ...HOURS.map(([label, minutes]): Row => ({ label, value: clock(minutes), press: () => host.send({ type: "hour", minutes }) })),
-    ...(flow() ? [row(flow()!)] : []),
-  ];
+    ...(offered().split(" ").includes("flow:") ? [row("flow", true)] : []),
+  ]);
 
   // Each mode's own list is built once: showing it again changes no row.
   const more: Row[] = [
@@ -237,16 +261,14 @@ export function createFlight(host: Host, touch: boolean): Flight {
     { label: "About", press: () => setSheet("about") },
   ];
   const leave = () => host.send({ type: "menu", on: false });
-  const menu = createMemo<Row[]>(() => [
+  const menu: Row[] = [
     // On a touch panel the way back stands in the heading.
     ...(touch ? [] : [{ label: "Resume", press: leave }]),
-    host.tour()
-      ? { label: "Fly yourself", press: () => (host.send({ type: "tour", on: false }), leave()) }
-      : { label: "Join the tour", press: () => (host.send({ type: "tour", on: true }), leave()) },
+    { label: () => (host.tour() ? "Fly yourself" : "Join the tour"), press: () => (host.send({ type: "tour", on: !host.tour() }), leave()) },
     ...more,
     { label: touch ? "How to fly" : "Controls", press: () => setSheet("controls") },
     { label: "Back to the title", press: () => host.send({ type: "title" }) },
-  ]);
+  ];
   const explained: Row[] = controls(touch).map(([label, value]) => ({ label, value }));
   const about: Row[] = [
     { label: "Place", value: AREA.district ? `${AREA.name}, ${AREA.district}` : AREA.name },
@@ -263,11 +285,12 @@ export function createFlight(host: Host, touch: boolean): Flight {
     if (sheet() === "settings") return settings();
     if (sheet() === "controls") return explained;
     if (sheet() === "about") return about;
-    return mode() === "title" ? title : menu();
+    return mode() === "title" ? title : menu;
   }, []);
 
   return {
     host, mode, listing, sheet, rows, place, flow, set,
+    lists: { title, menu },
     open: setSheet,
     // A note belongs to the flight: it does not stand under a list.
     note: () => (mode() === "flight" && noted() ? (host.tour() ? "Tour" : "Free flight") : ""),
