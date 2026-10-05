@@ -119,7 +119,7 @@ async function dist(pieceBytes: number) {
   const [pieces, hash] = [cut.pieces, cut.sha256];
   // The page names its build and its pack.
   let page = readFileSync(join(SITE, "index.html"), "utf8");
-  for (const [from, to] of [[`<meta name="pocket-pack" content="city.pack">`, `<meta name="pocket-pack" content="${manifest}">`], [`src="main.js"`, `src="app/${id}/main.js"`]] as const) {
+  for (const [from, to] of [[`<meta name="pocket-pack" content="city.pack">`, `<meta name="pocket-pack" content="${manifest}">`], [`src="main.js"`, `src="app/${id}/main.js"`], [`href="pocket3d-stage.css"`, `href="app/${id}/pocket3d-stage.css"`]] as const) {
     if (!page.includes(from)) throw new Error(`wgpu/page/index.html has no ${from}`);
     page = page.replace(from, to);
   }
@@ -158,7 +158,7 @@ function serveDist(port: number) {
   });
 }
 
-const TYPES: Record<string, string> = { html: "text/html; charset=utf-8", js: "text/javascript; charset=utf-8", wasm: "application/wasm", json: "application/json", png: "image/png", pak: "application/octet-stream" };
+const TYPES: Record<string, string> = { html: "text/html; charset=utf-8", js: "text/javascript; charset=utf-8", css: "text/css; charset=utf-8", wasm: "application/wasm", json: "application/json", png: "image/png", pak: "application/octet-stream" };
 
 /** The site and the pack. The pack is answered a range at a time, as a tab asks for it. */
 function serve(port: number) {
