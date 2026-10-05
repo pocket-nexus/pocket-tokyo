@@ -1,0 +1,288 @@
+// The flight as the interface sees it, on any device: which list is up, what
+// its rows do, where the eye is among the area's places, and what is kept
+// between runs (the settings).
+import { createEffect, createMemo, createSignal, on, onCleanup, untrack, type Accessor } from "solid-js";
+import { after } from "@pocketjs/framework/clock";
+import { glyph, modality, surfaceHasTouch } from "@pocketjs/framework/modality";
+import { AREA, PLACES } from "./generated/area.ts";
+import type { Host } from "./host.ts";
+import { T, type Mode, type Setting } from "./protocol.ts";
+
+/** What the settings a renderer may offer are called. */
+const LABELS: Record<string, string> = {
+  flow: "Clock",
+  invert: "Invert look",
+  traffic: "Traffic",
+  stats: "Statistics",
+};
+
+/** Hours worth turning the clock to, by the sun of the day the city is lit for. */
+export const HOURS: [string, number][] = [
+  ["Dawn", 5 * 60 + 50],
+  ["Morning", 9 * 60],
+  ["Afternoon", 15 * 60],
+  ["Sunset", 17 * 60 + 20],
+  ["Dusk", 18 * 60 + 10],
+  ["Night", 21 * 60],
+];
+
+/** A row of a list. */
+export interface Row {
+  label: string;
+  /** A switch's state, or undefined for a row with a named value or none. */
+  on?: boolean;
+  /** The named value of a choice, or what stands at the right of the row. */
+  value?: string;
+  /** A row that only informs takes no press and no focus mark. */
+  press?: () => void;
+}
+
+/** The list over the city: the mode's own, or one opened from it. */
+export type Sheet = "menu" | "time" | "settings" | "controls" | "about";
+
+export interface Flight {
+  host: Host;
+  mode: Accessor<Mode>;
+  /** True while a list is up and the pad is the interface's. */
+  listing: Accessor<boolean>;
+  sheet: Accessor<Sheet>;
+  open(sheet: Sheet): void;
+  /** The list's heading and rows. */
+  heading: Accessor<string>;
+  rows: Accessor<Row[]>;
+  /** One level up: a list opened from another closes; the menu leaves the flight alone. */
+  back(): void;
+  /** Whether `back` does anything here, and what it is called. */
+  backLabel: Accessor<string>;
+  menu(): void;
+  /** A line for the middle of the screen when the eye changes hands, "" when none. */
+  note: Accessor<string>;
+  /** The place the eye is at. */
+  place: Accessor<string>;
+  /** The renderer's `flow` setting, when it offers one. */
+  flow: Accessor<Setting | undefined>;
+  set(setting: Setting, value: number): void;
+}
+
+/** How many pulses are showing: while one is, a timer is pending. */
+const [pulsing, setPulsing] = createSignal(0);
+
+/** True for `seconds` after each `show()`. */
+export function createPulse(seconds: number): [Accessor<boolean>, () => void] {
+  const [shown, setShown] = createSignal(false);
+  let cancel: (() => void) | undefined;
+  const hide = () => {
+    if (!untrack(shown)) return;
+    setShown(false);
+    setPulsing((count) => count - 1);
+  };
+  onCleanup(() => {
+    cancel?.();
+    hide();
+  });
+  return [shown, () => {
+    cancel?.();
+    if (!untrack(shown)) setPulsing((count) => count + 1);
+    setShown(true);
+    cancel = after(seconds, hide);
+  }];
+}
+
+/** "05:07" */
+export function clock(minutes: number): string {
+  const h = Math.floor(minutes / 60) % 24, m = Math.floor(minutes) % 60;
+  return `${h < 10 ? "0" : ""}${h}:${m < 10 ? "0" : ""}${m}`;
+}
+
+/** What the sky is doing at an hour. */
+export function phase(minutes: number): string {
+  if (minutes < 5 * 60 + 20) return "NIGHT";
+  if (minutes < 6 * 60 + 40) return "DAWN";
+  if (minutes < 11 * 60) return "MORNING";
+  if (minutes < 13 * 60) return "MIDDAY";
+  if (minutes < 16 * 60 + 40) return "AFTERNOON";
+  if (minutes < 17 * 60 + 50) return "SUNSET";
+  if (minutes < 18 * 60 + 50) return "DUSK";
+  return "NIGHT";
+}
+
+const POINTS = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"];
+/** "NE" */
+export function point(heading: number): string {
+  return POINTS[Math.round(heading / 45) & 7];
+}
+
+/**
+ * The place the eye is at: the named place nearest to where the view meets
+ * the ground, when the eye is within its reach of that point; else the one
+ * the eye is over; else the area.
+ */
+export function placeAt(t: number[]): string {
+  const x = t[T.x], z = t[T.z], heading = (t[T.heading] * Math.PI) / 180;
+  const ahead = Math.min(700, Math.max(0, t[T.altitude]) * 1.6);
+  const ax = x + Math.sin(heading) * ahead, az = z - Math.cos(heading) * ahead;
+  let best = "", least = Infinity;
+  for (const place of PLACES) {
+    const seen = Math.hypot(place.x - ax, place.z - az), over = Math.hypot(place.x - x, place.z - z);
+    const d = Math.min(seen, over * 1.5);
+    if (d < place.reach && d < least) {
+      least = d;
+      best = place.name;
+    }
+  }
+  return best || AREA.name;
+}
+
+/** What flies the eye on this device, each control with what it does. */
+export function controls(touch: boolean): [string, string][] {
+  if (touch) {
+    return [
+      ["Stick", "Fly, slide sideways"],
+      ["Drag", "Turn the view"],
+      ["UP  DOWN", "Climb, descend"],
+      ["FAST", "Hold to fly faster"],
+      ["TOUR", "Hand the eye to the tour"],
+      ["Clock", "Tap it to turn the hour"],
+    ];
+  }
+  const dual = modality.screens.length > 1;
+  // A Vita has a second stick; a PSP and a 3DS turn with the one they have and pitch with two buttons.
+  const sticks: [string, string][] = !dual && surfaceHasTouch()
+    ? [["Left stick", "Fly"], ["Right stick", "Turn the view"]]
+    : [[dual ? "Circle Pad" : "Stick", "Fly forward, turn"], [`${glyph("triangle")} / ${glyph("cross")}`, "Look up, look down"]];
+  return [
+    ...sticks,
+    [`${glyph("rtrigger")} / ${glyph("ltrigger")}`, "Climb, descend"],
+    [glyph("square"), "Hold to fly faster"],
+    ["D-pad", "Left, right: turn the clock"],
+    [glyph("select"), "Tour on, tour off"],
+    [glyph("start"), "Menu"],
+  ];
+}
+
+interface Prefs {
+  options?: Record<string, number>;
+}
+
+export function createFlight(host: Host, touch: boolean): Flight {
+  const [sheet, setSheet] = createSignal<Sheet>("menu");
+  const [prefs, setPrefs] = createSignal<Prefs>({});
+  const [place, setPlace] = createSignal(AREA.name);
+  const mode = host.mode;
+  const listing = createMemo(() => mode() === "title" || mode() === "menu");
+
+  // Each mode opens on its own list.
+  createEffect(on(mode, () => setSheet("menu")));
+
+  // The eye changing hands is said once, in the middle of the screen.
+  const [noted, showNote] = createPulse(2.2);
+  createEffect(on(host.tour, () => mode() === "flight" && showNote(), { defer: true }));
+  // With no pulse showing nothing is scheduled here: the renderer may skip turns until it has news.
+  createEffect(() => host.ready() && host.send({ type: "idle", on: pulsing() === 0 }));
+
+  // The place is worked out a few times a second from the numbers in flight; its name is a signal.
+  let since = 0;
+  onCleanup(host.onNumbers((t) => {
+    if (since++ % 4) return;
+    const now = placeAt(t);
+    if (now !== untrack(place)) setPlace(now);
+  }));
+
+  // What the renderer stored for us last time: the settings, which it is told again once it has listed them.
+  let restored = false;
+  createEffect(() => {
+    if (!host.ready() || restored || !host.options().length) return;
+    restored = true;
+    let stored: Prefs = {};
+    try {
+      stored = JSON.parse(untrack(host.prefs) || "{}") as Prefs;
+    } catch {
+      // A damaged file starts over.
+    }
+    setPrefs(stored);
+    for (const setting of untrack(host.options)) {
+      const value = stored.options?.[setting.key];
+      if (typeof value === "number" && value !== setting.value) host.send({ type: "option", key: setting.key, value });
+    }
+  });
+  const set = (setting: Setting, value: number) => {
+    host.send({ type: "option", key: setting.key, value });
+    const next = { ...prefs(), options: { ...prefs().options, [setting.key]: value } };
+    setPrefs(next);
+    host.send({ type: "prefs", value: JSON.stringify(next) });
+  };
+  const row = (setting: Setting): Row => {
+    const label = LABELS[setting.key] ?? setting.key;
+    const choices = setting.choices;
+    if (!choices) return { label, on: !!setting.value, press: () => set(setting, setting.value ? 0 : 1) };
+    return { label, value: choices[setting.value] ?? "", press: () => set(setting, (setting.value + 1) % choices.length) };
+  };
+  const flow = createMemo(() => host.options().find((setting) => setting.key === "flow"));
+  // The clock's own setting stands with the hours; the rest are the settings.
+  const settings = (): Row[] => host.options().filter((setting) => setting.key !== "flow").map(row);
+  const hours = (): Row[] => [
+    ...HOURS.map(([label, minutes]): Row => ({ label, value: clock(minutes), press: () => host.send({ type: "hour", minutes }) })),
+    ...(flow() ? [row(flow()!)] : []),
+  ];
+
+  // Each mode's own list is built once: showing it again changes no row.
+  const more: Row[] = [
+    { label: "Time of day", press: () => setSheet("time") },
+    { label: "Settings", press: () => setSheet("settings") },
+  ];
+  const title: Row[] = [
+    { label: "Take the tour", press: () => host.send({ type: "start", tour: true }) },
+    { label: "Fly yourself", press: () => host.send({ type: "start", tour: false }) },
+    ...more,
+    { label: "About", press: () => setSheet("about") },
+  ];
+  const leave = () => host.send({ type: "menu", on: false });
+  const menu = createMemo<Row[]>(() => [
+    // On a touch panel the way back stands in the heading.
+    ...(touch ? [] : [{ label: "Resume", press: leave }]),
+    host.tour()
+      ? { label: "Fly yourself", press: () => (host.send({ type: "tour", on: false }), leave()) }
+      : { label: "Join the tour", press: () => (host.send({ type: "tour", on: true }), leave()) },
+    ...more,
+    { label: touch ? "How to fly" : "Controls", press: () => setSheet("controls") },
+    { label: "Back to the title", press: () => host.send({ type: "title" }) },
+  ]);
+  const explained: Row[] = controls(touch).map(([label, value]) => ({ label, value }));
+  const about: Row[] = [
+    { label: "Place", value: AREA.district ? `${AREA.name}, ${AREA.district}` : AREA.name },
+    { label: "Buildings", value: "PLATEAU, MLIT Japan" },
+    { label: "Streets", value: "© OpenStreetMap contributors" },
+    { label: "Terrain", value: "GSI Japan" },
+    { label: "Model", value: "Procedural Tokyo, Yong Su" },
+    { label: "Engine", value: "Pocket3D" },
+  ];
+  // During a flight no list is up: the rows stay what they were, so nothing is rebuilt under the gauges.
+  const rows = createMemo<Row[]>((before) => {
+    if (!listing()) return before;
+    if (sheet() === "time") return hours();
+    if (sheet() === "settings") return settings();
+    if (sheet() === "controls") return explained;
+    if (sheet() === "about") return about;
+    return mode() === "title" ? title : menu();
+  }, []);
+
+  return {
+    host, mode, listing, sheet, rows, place, flow, set,
+    open: setSheet,
+    // A note belongs to the flight: it does not stand under a list.
+    note: () => (mode() === "flight" && noted() ? (host.tour() ? "Tour" : "Free flight") : ""),
+    heading: () => {
+      if (sheet() === "time") return "TIME OF DAY";
+      if (sheet() === "settings") return "SETTINGS";
+      if (sheet() === "controls") return touch ? "HOW TO FLY" : "CONTROLS";
+      if (sheet() === "about") return "ABOUT";
+      return mode() === "menu" ? "MENU" : "";
+    },
+    back() {
+      if (sheet() !== "menu") setSheet("menu");
+      else if (mode() === "menu") leave();
+    },
+    backLabel: () => (sheet() !== "menu" ? "back" : mode() === "menu" ? "resume" : ""),
+    menu: () => host.send({ type: "menu", on: true }),
+  };
+}
