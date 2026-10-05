@@ -10,7 +10,7 @@ The packages for each device are on [Pocket Studio](https://studio.pocket.nexus)
 | PSP | 480 × 272, shadows that follow the clock | GE, fixed function, one display list a frame | 150 s from the title into the tour, with the interface over it (PSPLINK, 333 MHz): 4 500 frames, **5 late** (3 of them in the first 5 s, while the tour's first cells are read), worst frame 50 ms, 22 800 to 42 100 triangles a frame (mean 37 600), 1 255 draws |
 | Nintendo 3DS | 400 × 240 on the upper screen, shadows that follow the clock; the area from above and the day as a bar on the lower one | PICA200: four vertex programs, three combiner stages | Old 3DS, 90 s of the tour with the interface on both screens: 2 728 frames, **0 late**, 21 400 to 53 600 triangles a frame (mean 40 000), 276 draws, 17.1 ms of CPU and 17.5 ms of GPU a frame |
 | iPod touch 4 | 480 × 320, 4× MSAA, shadows that follow the clock, the tower floodlit and its lamps by night | OpenGL ES 2 on the SGX535: seven programs | 150 s of the tour with the interface over it, from 15:35 to 20:05 (iOS 6.1.6): 8 965 frames, **37 late** (0.41 %), worst frame 39.8 ms, 16 600 to 27 500 triangles a frame (mean 22 200), 205 draws |
-| Browser tab | the iPod touch's pack and passes on a screen whose size is a value: 960 × 544 or a handheld's, 4× MSAA | wgpu 25 over WebGPU (wasm32): the iPod touch's programs in WGSL | Chrome 154 on an M3 Max, 90 s of the tour at 960 × 544 through dusk into the night, no interface yet: 5 400 frames, **1 late**, 0.10 ms of the processor and the GPU a frame; the triangles and draws of an eye the iPod touch reported are the same here |
+| Browser tab | the iPod touch's pack and passes, shown as any of the four: its screens, its presentation of the interface, its buttons from the keys | wgpu 25 over WebGPU (wasm32): the iPod touch's programs in WGSL, the interface on PocketJS's UI core for wasm | Chrome 154 on an M3 Max, each device on the tour with its interface: 60 and 30 frames a second held, **0.5 to 1.1 ms of the processor and the GPU a frame**; for an eye the iPod touch reported, the same triangles and draws; beside its capture of a flight with the interface, a mean difference of 1.0 of 255 |
 
 The city is modelled once as Three.js content that runs in a browser, and a compiler lowers it to what one console draws:
 
@@ -20,7 +20,7 @@ The city is modelled once as Three.js content that runs in a browser, and a comp
 - **`crates/tokyo-sim`** is what moves, the same on every device: the camera and its tour, the clock and the sun, the sweep that turns heights into shadows, the traffic; and what a frame draws: the cells, blocks and regions in view at their levels of detail.
 - **`ui/`** is the interface: one PocketJS app, compiled for each device and drawn over the city by every runtime. **`crates/tokyo-interface`** is the renderer's side of it and the flow around a flight (the title, the flight, the menu).
 - **`vita/`**, **`psp/`**, **`n3ds/`** and **`ipod/`** draw a pack. The iPod touch's core is the 3DS's Rust source built for `armv7-apple-ios`.
-- **`wgpu/`** draws the iPod touch's pack with wgpu: in a browser tab over WebGPU, and on the build machine, where a frame goes to a file. Its core is the same Rust source again; `wgpu/kernel` is the part no game owns.
+- **`wgpu/`** draws the iPod touch's pack with wgpu: in a browser tab over WebGPU, with the interface over it and the page as any of the four handhelds, and on the build machine, where a frame goes to a file. Its core is the same Rust source again; `wgpu/kernel` is the part no game owns.
 
 PocketJS (pinned in `vendor/pocketjs`) supplies the device toolchains, the dev host, the GXM kernel and packaging. It also supplies what every Pocket3D game shows: the title card at launch and **the app icon in the console's launcher** (`vendor/pocketjs/engine/pocket3d/icon/`: 144 × 80 for the XMB, 128 × 128 for the Vita's bubble, 48 × 48 and 24 × 24 for the 3DS, 57 × 57 and 114 × 114 for SpringBoard). This repository holds no icon file; `psp/assets/pic1.png` and the Vita's LiveArea pictures are captures of this game.
 
@@ -162,15 +162,15 @@ A profile that gives `landmarks.lamps` a size per level also gets the model's la
 
 ## The frame in a browser tab
 
-`wgpu/README.md` has the loop, the deployable directory and the measurements in full.
+`wgpu/README.md` has the loop, the devices, the deployable directory and the measurements in full.
 
 - **The same core, pack and programs.** The flight, the slots and what a frame draws are the handheld core's (`n3ds/core/src`, built with its `host` feature); the pack is the iPod touch's, unchanged; the seven programs are `ipod/src/render.c`'s in WGSL, on wgpu 25. One renderer runs over WebGPU in a tab and over Metal on the build machine.
-- **The pack is read a range at a time.** The head, everything before the cells' records, is one read of 42.9 MB; a cell's record is one more when a slot wants it. A read is an HTTP `Range` request on the pack's file, or whole pieces of a pack cut into files of 2 MiB for a host that limits a file's size (`bun tools/wgpu.ts dist`: 95 files, 177.7 MB).
-- **The screen's shape is a value**: its size, its samples, the triangles a frame may draw and the frames a second change while the city flies, to a PSP's, a Vita's, a 3DS's or an iPod touch's.
+- **The interface is the bundle a device loads**, compiled by `tools/ui.ts`, as a guest in a realm of the page on PocketJS's UI core built for wasm. Its lines pass through `tokyo-interface`'s channel, and the flow is the `Session`'s. The UI core's rasterizer writes opaque pixels, so the picture is drawn over black and over white and what it covers is the difference; it is drawn again when its draw hash changes, 16 times a second in a flight: **3.3 ms a redraw at the PS Vita's 960 × 544**, 0.9 ms at the PSP's size.
+- **The page shows one handheld and changes it in a flight**: PS Vita, PSP, Nintendo 3DS with its lower screen under the pointer, iPod touch with the pointer as a finger. The screen's size, its samples, the triangles a frame may draw, the frames a second and what the buttons do are values of the renderer; the screens are shown at a whole number of display pixels. A browser whose pointer is a finger gets the device's buttons on the page, and the iPod touch first.
+- **The pack is read a range at a time.** The head is 9.3 MB; a block's picture of the ground (699 KB) is read after the first frame, the nearest block first, with flat ground until it arrives; a cell's record when a slot wants it. A read is an HTTP `Range` request on the pack's file, or whole pieces of a pack cut into files of 2 MiB for a host that limits a file's size (`bun tools/wgpu.ts dist`: 115 files, 183.9 MB). **The first frame of the city needs 13.6 MB**: 6.8 s on a line of 16 Mbit/s.
 - **The shadows are swept in a worker**: 4.2 ms of an M3 Max in wasm, beside the frames.
-- **The Pocket3D title card plays first**, over the page, while the module and the head are read. A browser without WebGPU is told so in one sentence.
-- **Checked against the iPod touch**: for an eye the device reported, the same triangles of each kind, draws, blocks and regions; beside its captures of one view by day, at dusk and by night, a mean difference of a colour of 2.8, 1.5 and 1.7 of 255.
-- The interface is not drawn there yet: the keys are the pad.
+- **The Pocket3D title card plays first**, over the page, while the interface and the head are read. A browser without WebGPU is told so in one sentence.
+- **Checked against the iPod touch**: for an eye the device reported, the same triangles of each kind, draws, blocks and regions; beside its capture of a flight at night with its interface on the screen, a mean difference of a colour of 1.0 of 255, none of it in the interface's pixels.
 
 ## The interface
 
@@ -207,9 +207,10 @@ A presentation decides where things go and how large they are. What the clock, t
 | PSP | stick (ahead, turn) | △, ✕ | R, L | □ | d-pad left, right | SELECT | START |
 | Nintendo 3DS | Circle Pad (ahead, turn) | X, B | R, L | Y | d-pad left, right; the bar on the lower screen | SELECT; the Tour key | START; the Menu key |
 | iPod touch | the stick on the panel | a finger on the city | UP, DOWN | FAST | a tap on the clock, then the bar | the TOUR key | the key at the upper left |
-| Browser tab | W A S D | the arrows; a drag on the city | E, Q | Shift | [ and ] | T | (no interface yet) |
 
 A stick, or a finger on the city, takes the eye off the tour where it is. On the 3DS, L + R + START leaves.
+
+In a browser tab the keys are the buttons of the device the page shows: W A S D the stick, the arrows the d-pad, Z X C V the face buttons at the right, the bottom, the left and the top (I K J L by their place on a device with one stick; the right stick on a PS Vita), Q and E the shoulders, Shift SELECT, Space START. The pointer is the finger on a touch screen and the stylus on the 3DS's lower one.
 
 On the handhelds the eye keeps 30 m above what stands under it and around it. On the tour it starts to rise two seconds before a tower and comes down after it.
 
