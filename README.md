@@ -1,6 +1,6 @@
 # Pocket Tokyo
 
-Tokyo, flown over on a PS Vita, a PSP, a Nintendo 3DS and an iPod touch 4. The city is the real one: 14 753 buildings of the Shiba district around Tokyo Tower, from Japan's open 3D city model (Project PLATEAU), OpenStreetMap and the national elevation survey. The sun crosses the sky, the shadows turn with it, the windows and the street lamps come on at dusk, and on the Vita the traffic runs on the real road graph. **960 × 544 with 4× multisampling at 60 frames per second on the Vita; 480 × 320 with 4× multisampling at 60 on the iPod touch; 30 frames per second on the PSP and the 3DS.**
+Tokyo, flown over on a PS Vita, a PSP, a Nintendo 3DS, an iPod touch 4 and a Redmi 1S. The city is the real one: 14 753 buildings of the Shiba district around Tokyo Tower, from Japan's open 3D city model (Project PLATEAU), OpenStreetMap and the national elevation survey. The sun crosses the sky, the shadows turn with it, the windows and the street lamps come on at dusk, and on the Vita the traffic runs on the real road graph. **960 × 544 with 4× multisampling at 60 frames per second on the Vita; 480 × 320 with 4× multisampling at 60 on the iPod touch; the panel's own 1280 × 720 at 60 on the Redmi 1S; 30 frames per second on the PSP and the 3DS.**
 
 The packages for each device are on [Pocket Studio](https://studio.pocket.nexus) for its members. Compiled city data keeps the terms of its sources ([Attribution](#attribution)).
 
@@ -10,17 +10,18 @@ The packages for each device are on [Pocket Studio](https://studio.pocket.nexus)
 | PSP | 480 × 272, shadows that follow the clock | GE, fixed function, one display list a frame | 150 s from the title into the tour, with the interface over it (PSPLINK, 333 MHz): 4 500 frames, **5 late** (3 of them in the first 5 s, while the tour's first cells are read), worst frame 50 ms, 22 800 to 42 100 triangles a frame (mean 37 600), 1 255 draws |
 | Nintendo 3DS | 400 × 240 on the upper screen, shadows that follow the clock; the area from above and the day as a bar on the lower one | PICA200: four vertex programs, three combiner stages | Old 3DS, 90 s of the tour with the interface on both screens: 2 728 frames, **0 late**, 21 400 to 53 600 triangles a frame (mean 40 000), 276 draws, 17.1 ms of CPU and 17.5 ms of GPU a frame |
 | iPod touch 4 | 480 × 320, 4× MSAA, shadows that follow the clock, the tower floodlit and its lamps by night | OpenGL ES 2 on the SGX535: seven programs | 150 s of the tour with the interface over it, from 15:35 to 20:05 (iOS 6.1.6): 8 965 frames, **37 late** (0.41 %), worst frame 39.8 ms, 16 600 to 27 500 triangles a frame (mean 22 200), 205 draws |
+| Redmi 1S | 1280 × 720, shadows that follow the clock, the lamps' light on the ground, the tower floodlit and its lamps by night | OpenGL ES 3.0 on the Adreno 305: eight programs | 150 s of the tour with the interface over it, from 15:50 to 20:22 (MIUI V5; the SoC at 47 °C at the start and 60 to 65 °C from 25 s in, two cores online): 8 959 frames, **48 late** (0.54 %; 29 of them within 10 s of the dusk, when the walls read the shadows and their rooms), worst frame 35.2 ms, 43 800 to 97 600 triangles a frame (mean 67 100), 135 draws |
 
 The city is modelled once as Three.js content that runs in a browser, and a compiler lowers it to what one console draws:
 
 - **`web/`** is the model: [Procedural Tokyo](https://github.com/jeantimex/tokyo) by Yong Su (MIT), with its pipeline from public records to tiles (`web/tools/pipeline`) and its three.js client. `web/src/pocket/` adds the export page.
-- **`crates/tokyo-cook`** is the city compiler: CityIR in, one pack and a compile receipt out, for a device profile (`profiles/vita60.json`, `psp30.json`, `n3ds30.json`, `ipod60.json`).
+- **`crates/tokyo-cook`** is the city compiler: CityIR in, one pack and a compile receipt out, for a device profile (`profiles/vita60.json`, `psp30.json`, `n3ds30.json`, `ipod60.json`, `redmi1s60.json`).
 - **`crates/tokyo-pack`** is the pack: tables, vertex layouts and sections shared by the compiler and the runtimes.
 - **`crates/tokyo-sim`** is what moves, the same on every device: the camera and its tour, the clock and the sun, the sweep that turns heights into shadows, the traffic; and what a frame draws: the cells, blocks and regions in view at their levels of detail.
 - **`ui/`** is the interface: one PocketJS app, compiled for each device and drawn over the city by every runtime. **`crates/tokyo-interface`** is the renderer's side of it and the flow around a flight (the title, the flight, the menu).
-- **`vita/`**, **`psp/`**, **`n3ds/`** and **`ipod/`** draw a pack. The iPod touch's core is the 3DS's Rust source built for `armv7-apple-ios`.
+- **`vita/`**, **`psp/`**, **`n3ds/`**, **`ipod/`** and **`android/`** draw a pack. The iPod touch's core is the 3DS's Rust source built for `armv7-apple-ios`; the Android app's core is its own (`android/core`, OpenGL ES 3.0) and reads the Vita's layouts.
 
-PocketJS (pinned in `vendor/pocketjs`) supplies the device toolchains, the dev host, the GXM kernel and packaging. It also supplies what every Pocket3D game shows: the title card at launch and **the app icon in the console's launcher** (`vendor/pocketjs/engine/pocket3d/icon/`: 144 × 80 for the XMB, 128 × 128 for the Vita's bubble, 48 × 48 and 24 × 24 for the 3DS, 57 × 57 and 114 × 114 for SpringBoard). This repository holds no icon file; `psp/assets/pic1.png` and the Vita's LiveArea pictures are captures of this game.
+PocketJS (pinned in `vendor/pocketjs`) supplies the device toolchains, the dev host, the GXM kernel and packaging. It also supplies what every Pocket3D game shows: the title card at launch and **the app icon in the console's launcher** (`vendor/pocketjs/engine/pocket3d/icon/`: 144 × 80 for the XMB, 128 × 128 for the Vita's bubble, 48 × 48 and 24 × 24 for the 3DS, 57 × 57 and 114 × 114 for SpringBoard, 48 to 192 pixels for an Android launcher). This repository holds no icon file; `psp/assets/pic1.png` and the Vita's LiveArea pictures are captures of this game.
 
 ## From records to a frame
 
@@ -158,6 +159,19 @@ A profile that gives `landmarks.lamps` a size per level also gets the model's la
 - **Every colour in a fragment program is `lowp`.** With `mediump` intermediates a night frame of 43 000 triangles (one sample a pixel) missed every eighth refresh and a dusk frame every fourth; in `lowp` the same frames miss none.
 - A cell's record and the shadows reach the GPU on the render thread, one cell and one strip of the shadows a frame. The shadows have two textures, and a sweep is uploaded into the one no frame reads: a tile-based driver copies a texture that a queued frame reads before it writes into it.
 
+## The frame on the Redmi 1S
+
+`android/README.md` has the loop and the measurements in full.
+
+- The pack is the Vita's shape (target `redmi1s`): every place in memory, the near level the reference's own triangles, a normal on every vertex. Its pictures are ETC2 blocks, and a landmark is a model with three levels of detail in no cell's batches (20 024, 2 440 and 1 272 triangles for Tokyo Tower). The tower stands in its floodlights by night at every level: the two farther ones carry the alpha of the reference's own steel (120), which this target's program, the Vita's, multiplies by 1.6.
+- The scene goes straight into the window's buffer at the panel's 1280 × 720, with no target off the screen. The interface is drawn over it at 640 × 360 with two pixels a point.
+- **The window has no samples of its own.** With two a pixel from the EGL config, a held frame of 81 100 triangles under the interface went from 14.6 ms of the GPU and a frame a refresh to 20.2 ms and a frame every 23.5 ms; at the governor's shortest distances (69 100 triangles), from 13.2 ms to 18.4 ms and a frame every 21.9 ms.
+- **A frame costs what its triangles interpolate.** With 12 to 16 numbers on every vertex a frame of 150 000 triangles took the GPU 20.3 ms; each number 58 000 triangles carry is 0.4 to 0.6 ms. The ground hands its fragments six numbers, a wall nine, and what is painted is lit, shadowed and hazed in the vertex stage: a colour crosses the triangle. Drawing nearest first, farthest first or in the pack's order came within 1.5 ms of each other, and a pass into the depth buffer first made the frame 33.6 ms.
+- **A program reads the shadows or the lights**: by day shadows, by night the lamps' light on the ground and the rooms' on the walls. With both read, a frame of 74 400 triangles takes 14.7 ms; with the day's programs 12.7 ms. Only the walls have a set with both, for the dusk; the lamps' light comes onto the ground over two seconds once the sun's is out.
+- **The governor follows the GPU's own time for a frame** (`EXT_disjoint_timer_query`, read four frames later): the distances of the near and mid levels come in while it is over 13 ms and go out under 11 ms. The timer leaves out 2.4 ms of a frame, so 14.2 ms of it is a refresh. Over the tour the scale went from 0.25 to 0.80 (mean 0.35): the near level reached 75 to 240 m and the mid level 325 to 1 040 m.
+- Indices are 16 bits from a batch's first vertex and each batch has a vertex array of its own: with 32-bit indices over one array the driver walked the indices on the render thread, 147 µs for one block's ground.
+- Above 60 °C the system leaves the phone two cores at 1.0 GHz. The shadows' sweep runs below every thread of a frame: at the frame's priority a minute of the tour had 29 late frames, below it 10.
+
 ## The interface
 
 Every 2D pixel comes from one PocketJS app, `ui/`: the title, the instruments over a flight, the menu, the hours, the settings and, on a touch panel, the controls. A renderer draws the city and no text. `ui/pocket.json` declares three presentations, and PocketJS picks one at build time from the device's modality (screens, touch, buttons):
@@ -167,12 +181,13 @@ Every 2D pixel comes from one PocketJS app, `ui/`: the title, the instruments ov
 | `presentations/single.tsx` | PSP, PS Vita | 480 × 272 logical; the Vita rasters it at 2× | Lists walked by the pad under a legend; on the Vita a row also takes a tap |
 | `presentations/dual.tsx` | Nintendo 3DS | 400 × 240 over 320 × 240 | The lower screen: the area from above with the eye on it, the Menu and Tour keys, and **the day as a bar a stylus turns** |
 | `presentations/touch.tsx` | iPod touch 4 | 480 × 320 | A stick, three keys (up, down, fast), a finger on the city to turn the view; a tap on the clock opens the day as a bar; rows a finger presses, marked under it |
+| the same, entered through `main-touch-wide.tsx` | Redmi 1S | 640 × 360 logical, rastered at 2× for the panel's 1280 × 720 | Nothing: `panel(640, 360)` gives the presentation its screen before it mounts. The title's rows stand at the left where the iPod touch's do, a list's panel in the middle of the screen at the iPod touch's size, and each control at the edge it hangs from |
 
 A presentation decides where things go and how large they are. What the clock, the compass tape, a list row or the map looks like is in `ui/app/parts.tsx` once, and what the lists hold is in `ui/app/flight.ts` once.
 
 **The title, the lists, the menu and the strip under them stand in the same place on every device.** A presentation changes a row's height (26 to 30 px under a pad; 36 px on the touch panel's title and 44 px in its lists) and adds the controls its device alone has. The touch panel's strip names no button, the way back stands in a list's heading, and the six hours stand two abreast under the day's bar, so that each is 44 px tall.
 
-- **The protocol** (`ui/app/protocol.ts`, `crates/tokyo-interface`) is JSON lines over PocketJS's `pocket.overlay` service, answered in the process: the QuickJS API on the Vita and the PSP, the `svcwire` symbols of PocketJS's C hosts on the 3DS and the iPod touch. The renderer sends the members of its state that changed since the last line; the interface sends `start`, `menu`, `tour`, `hour`, `title`, `option`, `prefs`, and from a touch panel `drive` (the stick and the held keys) and `look` (pixels a finger dragged).
+- **The protocol** (`ui/app/protocol.ts`, `crates/tokyo-interface`) is JSON lines over PocketJS's `pocket.overlay` service, answered in the process: the QuickJS API on the Vita and the PSP, the `svcwire` symbols of PocketJS's C hosts on the 3DS, the iPod touch and the Redmi 1S. The renderer sends the members of its state that changed since the last line; the interface sends `start`, `menu`, `tour`, `hour`, `title`, `option`, `prefs`, and from a touch panel `drive` (the stick and the held keys) and `look` (pixels a finger dragged).
 - **The flow** is `tokyo_interface::Session`, one implementation for every device, around `tokyo_sim::flight::Flight`: behind the title the tour flies; a flight is the tour's or the pad's; under the menu the pad is the interface's and the city keeps moving. With no guest on the screen (its files are missing, or it threw) the menu button hands the eye to the tour and takes it back.
 - **The numbers in flight** (the clock, the height, the speed, the heading, the eye on the map) travel as one array, `t`. Each is written to its node (`@pocketjs/framework/hot`) in a cell of fixed size: one native call and no layout. The compass is one tape that slides.
 - **The place under the view** is worked out in the interface from those numbers and the places the area file names (`areas/shiba.json`: a name, a latitude and a longitude each): the named place nearest to where the view meets the ground. A new area brings its own places.
@@ -193,6 +208,7 @@ A presentation decides where things go and how large they are. What the clock, t
 | PSP | stick (ahead, turn) | △, ✕ | R, L | □ | d-pad left, right | SELECT | START |
 | Nintendo 3DS | Circle Pad (ahead, turn) | X, B | R, L | Y | d-pad left, right; the bar on the lower screen | SELECT; the Tour key | START; the Menu key |
 | iPod touch | the stick on the panel | a finger on the city | UP, DOWN | FAST | a tap on the clock, then the bar | the TOUR key | the key at the upper left |
+| Redmi 1S | the stick on the panel | a finger on the city | UP, DOWN | FAST | a tap on the clock, then the bar | the TOUR key | the key at the upper left; the back key under the panel (it leaves the app from the title) |
 
 A stick, or a finger on the city, takes the eye off the tour where it is. On the 3DS, L + R + START leaves.
 

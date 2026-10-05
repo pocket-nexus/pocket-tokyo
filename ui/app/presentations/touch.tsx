@@ -15,7 +15,12 @@ import { AreaMap, Button, Chip, Clock, Compass, createMenu, Face, Fade, Heading,
 import { FLY } from "../protocol.ts";
 import { DIM, GLASS, HAIRLINE, INK, NIGHT, tint, TOWER, WASH } from "../theme.ts";
 
-const W = 480, H = 320;
+let W = 480, H = 320;
+/** The panel's own size, said before the presentation mounts when it is not the iPod touch's (`main-touch-wide.tsx`). */
+export function panel(width: number, height: number) {
+  W = width;
+  H = height;
+}
 const FOOTER = 24;
 /** A fingertip on this panel (Pocket HIG, touch modality). */
 const TARGET = 44;

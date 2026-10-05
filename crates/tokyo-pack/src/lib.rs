@@ -28,14 +28,14 @@
 //! | `VSOL` | `SolidVertex` records: structures, models, the lattice tower |
 //! | `IDX0` | `u16` indices, relative to each batch's first vertex |
 //! | `SPAN` | `u32` offsets into a batch's indices. Per batch ordered by cell: `cells² + 1`, or `cells² × (SECTORS + 1) + 1` when it is also ordered by sector. Per near batch ordered by sector (`flag::FACED`): `SECTORS + 2` |
-//! | `FACD` | the facades by day: `TexHeader`, then BC3 levels, largest first |
-//! | `FACN` | the facades' lights: `TexHeader`, then BC1 levels |
+//! | `FACD` | the facades by day: `TexHeader`, then BC3 levels, largest first (with `flag::ETC2`: ETC2 with EAC alpha) |
+//! | `FACN` | the facades' lights: `TexHeader`, then BC1 levels (with `flag::ETC2`: ETC2) |
 //! | `GLVL` | `GroundLevel` table: where each picture from above is in `GTEX` |
-//! | `GTEX` | BC1 levels of every block's and every region's picture from above |
+//! | `GTEX` | BC1 levels of every block's and every region's picture from above (with `flag::ETC2`: ETC2) |
 //! | `HMAP` | `u16` per cell of `City::grid`: the top of whatever stands there, in `City::height_step` metres above `City::y0` |
 //! | `TOUR` | `f32 × 6` per place of the tour: where the eye is, and the point it looks at |
 //! | `HPIC` | handheld packs: `HandPicture` table, one per block, then the facades |
-//! | `LAND` | handheld packs: `Landmark` table |
+//! | `LAND` | handheld packs, and packs with `flag::LANDMARKS`: `Landmark` table |
 //! | `HTEX` | handheld packs: the pictures. PSP: a day palette and a night palette (256 × 4 bytes, red first), then levels of 8-bit indices, largest first, each swizzled; a picture of the ground keeps to the first 128 colours. 3DS: the ground by day in ETC1; the facades by day, then what their windows emit, `r5 g6 b5`; all tiled |
 //! | `NCEL` | handheld packs: `NearCell` table, one per cell |
 //! | `NEAR` | handheld packs: per cell its top, wall and solid vertices, its indices and its picture (as in `HTEX`) |
@@ -96,6 +96,11 @@ pub mod flag {
     /// The near level is in `NEAR`, a record per cell (`NCEL`); a near batch counts its vertices and indices
     /// from the start of its cell's.
     pub const STREAMED: u32 = 2;
+    /// The pictures (`FACD`, `FACN`, `GTEX`) are ETC2 blocks.
+    pub const ETC2: u32 = 4;
+    /// A landmark is drawn from `LAND`, a model of its own at each level of detail, and is in no cell's or
+    /// block's batches. A handheld pack is so without saying.
+    pub const LANDMARKS: u32 = 8;
 }
 
 /// The city's frame: metres, x east, y up, z south.
@@ -241,8 +246,8 @@ pub struct NearCell {
     pub levels: u16,
 }
 
-/// A landmark of a handheld pack: a model of its own at each level of detail, chosen by its distance alone.
-/// Its vertices are in the frame of `block`, as that block's solids are.
+/// A landmark: a model of its own at each level of detail, chosen by its distance alone. Its vertices are in
+/// the frame of `block`, as that block's solids are. (Handheld packs, and packs with `flag::LANDMARKS`.)
 #[derive(Clone, Copy, Debug, Default)]
 #[repr(C)]
 pub struct Landmark {
@@ -324,11 +329,16 @@ pub mod tex_format {
     pub const BC1: u32 = 1;
     /// BC3 blocks in row order.
     pub const BC3: u32 = 3;
+    /// ETC2 RGB8 blocks in row order, each in the format's own byte order. (The compiler writes the blocks
+    /// ETC1 also has, which every ETC2 decoder reads.)
+    pub const ETC2: u32 = 4;
+    /// ETC2 RGBA8 blocks in row order: the 8 bytes of EAC alpha, then the 8 of colour.
+    pub const ETC2A: u32 = 5;
 
     /// Bytes of one level.
     pub fn level_bytes(format: u32, w: u32, h: u32) -> usize {
         let blocks = (w.max(4) as usize / 4) * (h.max(4) as usize / 4);
-        blocks * if format == BC3 { 16 } else { 8 }
+        blocks * if format == BC3 || format == ETC2A { 16 } else { 8 }
     }
 }
 

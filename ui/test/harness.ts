@@ -6,12 +6,12 @@ import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { createCanvas, ImageData, loadImage, type Canvas } from "../../vendor/pocketjs/node_modules/@napi-rs/canvas";
 import { PROP } from "../../vendor/pocketjs/contracts/spec/spec.ts";
-import { __packTouch, createTouchHitFacts } from "../../vendor/pocketjs/framework/src/touch.ts";
+import { __packTouch, __packTouchWide, createTouchHitFacts } from "../../vendor/pocketjs/framework/src/touch.ts";
 import { createWasmUi } from "../../vendor/pocketjs/hosts/web/wasm-ops.js";
 import type { Command, HostState } from "../app/protocol.ts";
 
 const root = resolve(import.meta.dir, "../..");
-export type Device = "psp" | "vita" | "3ds" | "ipod";
+export type Device = "psp" | "vita" | "3ds" | "ipod" | "android";
 
 /** A device's renderer, reduced to the state the interface sees. */
 export class Mock {
@@ -86,7 +86,19 @@ const VIEW: Record<Device, { w: number; h: number; density: number; aux?: [numbe
   vita: { w: 480, h: 272, density: 2 },
   "3ds": { w: 400, h: 240, density: 1, aux: [320, 240] },
   ipod: { w: 480, h: 320, density: 1 },
+  android: { w: 640, h: 360, density: 2 },
 };
+
+/**
+ * A point of the touch presentation on a panel of any size, given where it is on the iPod touch's
+ * 480 × 320 and which edges its control hangs from: `l`, `c` or `r` across, `t`, `c` or `b` down.
+ */
+export function anchored(view: { w: number; h: number }) {
+  return (x: number, y: number, across: "l" | "c" | "r" = "l", down: "t" | "c" | "b" = "t"): [number, number] => [
+    x + (across === "l" ? 0 : across === "c" ? (view.w - 480) / 2 : view.w - 480),
+    y + (down === "t" ? 0 : down === "c" ? (view.h - 320) / 2 : view.h - 320),
+  ];
+}
 
 export interface Rig {
   mock: Mock;
@@ -124,7 +136,8 @@ export async function boot(device: Device): Promise<Rig> {
   const facts = createTouchHitFacts((x, y) => (view.aux ? ops.hitTestBoundsAuxiliary(x, y) : ops.hitTestBounds(x, y)));
   const frame = (buttons: number, touch: { x: number; y: number; id?: number }[]) => {
     mock.tick(1 / 60);
-    const packed = touch.map((t) => __packTouch(t.id ?? 1, t.x, t.y));
+    // (a contact beyond 511 logical pixels travels in the wide form, as PocketJS's C runtime packs it)
+    const packed = touch.map((t) => (t.x > 511 || t.y > 511 ? __packTouchWide : __packTouch)(t.id ?? 1, t.x, t.y));
     const surface = view.aux ? 1 : 0;
     globals.frame(buttons, undefined, packed, facts(packed), packed.map(() => surface));
     for (const line of pending.splice(0)) mock.receive(JSON.parse(line));

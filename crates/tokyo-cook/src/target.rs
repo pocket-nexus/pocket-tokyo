@@ -11,6 +11,9 @@ pub enum Target {
     Pica,
     /// OpenGL ES 2 (the iPod touch): the 3DS's vertices, and pictures as 16-bit texels in row order.
     Gles,
+    /// OpenGL ES 3.0 on an Adreno 305 (the Redmi 1S): the Vita's vertices, indices and levels of detail,
+    /// pictures as ETC2 blocks, and a landmark as a model of its own at each level of detail.
+    Gles3,
 }
 
 impl Target {
@@ -20,17 +23,26 @@ impl Target {
             "psp" => Ok(Target::Psp),
             "n3ds" => Ok(Target::Pica),
             "ipod" => Ok(Target::Gles),
-            other => Err(format!("target {other:?} is not one of vita, psp, n3ds, ipod")),
+            "redmi1s" => Ok(Target::Gles3),
+            other => Err(format!("target {other:?} is not one of vita, psp, n3ds, ipod, redmi1s")),
         }
     }
 
     /// Bytes of a top, a wall and a solid vertex.
     pub fn sizes(self) -> [usize; 3] {
         match self {
-            Target::Vita => [12, 20, 16],
+            Target::Vita | Target::Gles3 => [12, 20, 16],
             Target::Psp => [8, 12, 8],
             Target::Pica | Target::Gles => [8, 16, 12],
         }
+    }
+}
+
+impl Target {
+    /// The whole city stays in the machine's memory, every vertex with its normal, and the near level is the
+    /// reference's own triangles. The others are handhelds: a cell's near level is read when the eye comes near.
+    pub fn resident(self) -> bool {
+        matches!(self, Target::Vita | Target::Gles3)
     }
 }
 

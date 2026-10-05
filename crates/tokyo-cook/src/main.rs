@@ -215,7 +215,7 @@ impl Frame<'_> {
             let pos = [q_in(t.p[k][0], self.x0, self.side), qy(t.p[k][1]), q_in(t.p[k][2], self.z0, self.side)];
             let ao = self.sky.open(t.p[k], t.n[k]);
             match self.target {
-                Target::Vita => Raw::of(&TopVertex { pos, ao, pad: 0, normal: n8(t.n[k]), pad2: 0 }),
+                Target::Vita | Target::Gles3 => Raw::of(&TopVertex { pos, ao, pad: 0, normal: n8(t.n[k]), pad2: 0 }),
                 // The GE: colour, position. Its texture matrix makes the coordinates in the picture from x and z,
                 // and every top is lit as one group.
                 Target::Psp => Raw::from(&[&psp565([ao; 3]), &s16(pos[0]), &s16(pos[1]), &s16(pos[2])]),
@@ -232,7 +232,7 @@ impl Frame<'_> {
             let (ao, n) = (self.sky.open(w.p[k], w.n), n8(w.n));
             let uv = [(w.uv[k][0] * 32767.0).round() as i16, (w.uv[k][1] / pack::FACADE_V * 32767.0).round().clamp(-32767.0, 32767.0) as i16];
             match self.target {
-                Target::Vita => Raw::of(&WallVertex { pos, ao, gain: w.gain, normal: n, late: w.late, color: [w.color[0], w.color[1], w.color[2], 0], uv }),
+                Target::Vita | Target::Gles3 => Raw::of(&WallVertex { pos, ao, gain: w.gain, normal: n, late: w.late, color: [w.color[0], w.color[1], w.color[2], 0], uv }),
                 Target::Psp => {
                     // (v: repeats of the picture from -FACADE_V to FACADE_V over the unsigned range)
                     let v16 = ((w.uv[k][1] / pack::FACADE_V * 0.5 + 0.5).clamp(0.0, 1.0) * 65535.0).round() as u16;
@@ -253,7 +253,7 @@ impl Frame<'_> {
             let pos = [q_wide(s.p[k][0], self.x0, self.side), qy(s.p[k][1]), q_wide(s.p[k][2], self.z0, self.side)];
             let (ao, n) = (self.sky.open(s.p[k], s.n[k]), n8(s.n[k]));
             match self.target {
-                Target::Vita => Raw::of(&SolidVertex { pos, ao, pad: 0, normal: n, pad2: 0, color: s.color }),
+                Target::Vita | Target::Gles3 => Raw::of(&SolidVertex { pos, ao, pad: 0, normal: n, pad2: 0, color: s.color }),
                 Target::Psp => {
                     let c = [0, 1, 2].map(|c| (s.color[c] as u16 * ao as u16 / 255) as u8);
                     Raw::from(&[&psp565(c), &s16(pos[0]), &s16(pos[1]), &s16(pos[2])])
@@ -313,8 +313,12 @@ fn run() -> Result<(), String> {
     let per_region = BLOCK_TILES * region_blocks as i32;
     // A machine without fragment programs lights a group of faces with one colour: its solids are ordered by
     // sector as walls are. A handheld reads each cell's near level by itself.
-    let faced = target != Target::Vita;
-    let streamed = target != Target::Vita;
+    let faced = !target.resident();
+    let streamed = !target.resident();
+    // A landmark as a model of its own at each level of detail, drawn by its distance alone: the handhelds,
+    // and a GPU that pays for every small triangle whatever it hides (a lattice tower of 19 000 triangles
+    // two kilometres away is a few hundred pixels).
+    let landmarked = streamed || target == Target::Gles3;
     let floor_to = |v: i32| v.div_euclid(per_region) * per_region;
     let (tx0, tz0) = (floor_to(manifest.tiles.iter().map(|t| t.x).min().ok_or("no tiles")?), floor_to(manifest.tiles.iter().map(|t| t.z).min().unwrap()));
     let (tx1, tz1) = (floor_to(manifest.tiles.iter().map(|t| t.x).max().unwrap()) + per_region - 1, floor_to(manifest.tiles.iter().map(|t| t.z).max().unwrap()) + per_region - 1);
@@ -567,8 +571,8 @@ fn run() -> Result<(), String> {
             // Painted geometry: all of it near, less of it in the middle; far away it is in the region's picture.
             out.near.solids = simplify::solids(&painted[i], f(&profile["solids"], "error", 0, 0.15), f(&profile["solids"], "minSize", 0, 0.0));
             out.mid.solids = simplify::solids(&painted[i], f(&profile["solids"], "error", 1, 1.0), f(&profile["solids"], "minSize", 1, 0.0));
-            // (a handheld draws a lattice tower as a landmark, from its members)
-            if !streamed {
+            // (elsewhere a lattice tower is a landmark, drawn from `LAND`)
+            if !landmarked {
                 for level in [&mut out.near, &mut out.mid, &mut out.far] {
                     level.solids.extend_from_slice(&lattice[i]);
                 }
@@ -811,7 +815,9 @@ fn run() -> Result<(), String> {
     drop(tiles);
     // ---- a handheld's landmarks: a model at each level of detail, made from the members the export recorded,
     // in the frame of the block the landmark stands in
-    let marks = if streamed { landmark::read(&input.join("landmarks.cir"))? } else { Vec::new() };
+    let marks = if landmarked { landmark::read(&input.join("landmarks.cir"))? } else { Vec::new() };
+    // The reference's own triangles of what is a landmark: the nearest level of a machine that keeps normals.
+    let own: Vec<SolidTri> = if target == Target::Gles3 { lattice.iter().flatten().copied().collect() } else { Vec::new() };
     let mark_rule = |lod: usize| landmark::Rule { rank: 2 - lod as u8, thick: f(&profile["landmarks"], "thick", lod, [0.0, 1.6, 3.2][lod]), lamps: f(&profile["landmarks"], "lamps", lod, 0.0) };
     let mut landmarks: Vec<Landmark> = Vec::new();
     let mut mark_meta: Vec<Value> = Vec::new();
@@ -822,7 +828,22 @@ fn run() -> Result<(), String> {
         let mut record = Landmark { min: [f32::INFINITY; 3], max: [f32::NEG_INFINITY; 3], reach: [f(&profile["landmarks"], "reach", 0, 450.0), f(&profile["landmarks"], "reach", 1, 1100.0)], block: (bz * bnx + bx) as u32, ..Default::default() };
         let mut counts = [0usize; LODS];
         for lod in 0..LODS {
-            let mut tris = landmark::model(l, mark_rule(lod), lod == 0);
+            let mut tris = if lod == 0 && !own.is_empty() {
+                // Near the eye: the reference's triangles within the landmark's reach, and its lamps alone
+                // from the members.
+                let near = |s: &&SolidTri| (s.p[0][0] - l.at[0]).hypot(s.p[0][2] - l.at[1]) < 260.0;
+                let lamps = landmark::Landmark { name: l.name.clone(), at: l.at, beams: Vec::new(), boxes: Vec::new(), lamps: l.lamps.iter().map(|x| landmark::Lamp { at: x.at, size: x.size, color: x.color }).collect() };
+                own.iter().filter(near).copied().chain(landmark::model(&lamps, mark_rule(lod), false)).collect()
+            } else {
+                landmark::model(l, mark_rule(lod), lod == 0)
+            };
+            // (this target's program is the Vita's, 1.6 times a face's alpha: under its floodlights a member
+            // then shines as the reference's own steel does in the nearest level, `buildings.rs`)
+            if target == Target::Gles3 {
+                for s in tris.iter_mut().filter(|s| s.color[3] == landmark::FLOODLIT) {
+                    s.color[3] = 120;
+                }
+            }
             tris.sort_by_key(|s| city::solid_sector(&s.p));
             let first = out.batches.len();
             for c in chunks(&tris, |s| frame.solid(s)) {
@@ -879,13 +900,15 @@ fn run() -> Result<(), String> {
     let mut htex: Vec<u8> = Vec::new();
     let mut ncel: Vec<NearCell> = Vec::new();
     let mut near: Vec<u8> = Vec::new();
-    if target == Target::Vita {
+    // What a machine that keeps the whole city reads its pictures as: (colour, colour with a mask).
+    let formats = if target == Target::Gles3 { (pack::tex_format::ETC2, pack::tex_format::ETC2A) } else { (pack::tex_format::BC1, pack::tex_format::BC3) };
+    if target.resident() {
         let chain = |img: Option<tex::Image>| -> Vec<(usize, Vec<u8>)> {
             // (open ground beyond the export: one flat level)
             let mut img = img.unwrap_or_else(|| tex::Image::blank(floor, floor, [111, 110, 104]));
             let mut levels = Vec::new();
             loop {
-                levels.push((img.w, cache.compress(&img, pack::tex_format::BC1)));
+                levels.push((img.w, cache.compress(&img, formats.0)));
                 if img.w <= floor {
                     break;
                 }
@@ -910,8 +933,8 @@ fn run() -> Result<(), String> {
             (regions[r].ground_first, regions[r].ground_levels) = place(levels);
         }
         let mips = profile["facade"]["mips"].as_u64().unwrap_or(6) as u32;
-        facd = cache.chain(tex::load(&input.join("facade.day.png"))?, pack::tex_format::BC3, mips);
-        facn = cache.chain(tex::load(&input.join("facade.night.png"))?, pack::tex_format::BC1, mips);
+        facd = cache.chain(tex::load(&input.join("facade.day.png"))?, formats.1, mips);
+        facn = cache.chain(tex::load(&input.join("facade.night.png"))?, formats.0, mips);
     } else {
         // A handheld takes every picture as a day and night pair. A block's picture shows the structures the
         // mid and far levels do not draw (the far pictures of the export); a cell's own picture, read with its
@@ -1108,7 +1131,7 @@ fn run() -> Result<(), String> {
         view,
         hour: num(&area, "hour", 15.5),
         region_blocks: region_blocks as u32,
-        flags: if faced { flag::FACED } else { 0 } | if streamed { flag::STREAMED } else { 0 },
+        flags: if faced { flag::FACED } else { 0 } | if streamed { flag::STREAMED } else { 0 } | if target == Target::Gles3 { flag::ETC2 | flag::LANDMARKS } else { 0 },
     };
     let name = |l: usize| ["near", "mid", "far"][l];
     let meta = json!({
@@ -1134,10 +1157,13 @@ fn run() -> Result<(), String> {
     w.add(pack::VSOL, out.vsol);
     w.add(pack::IDX0, pack::slice_bytes(&out.idx).to_vec());
     w.add(pack::HMAP, pack::slice_bytes(&hmap).to_vec());
-    if target == Target::Vita {
+    if target.resident() {
         w.add(pack::FACD, facd);
         w.add(pack::FACN, facn);
         w.add(pack::LAMP, pack::slice_bytes(&lamp_map).to_vec());
+        if target == Target::Gles3 {
+            w.add(pack::LAND, pack::slice_bytes(&landmarks).to_vec());
+        }
     } else {
         if target != Target::Psp {
             // The lamps' light as a texture over the stored grid of heights, 1 024 texels a side: the 3DS and
@@ -1174,7 +1200,7 @@ fn run() -> Result<(), String> {
     w.add(pack::TOUR, pack::slice_bytes(&tour).to_vec());
     w.add(pack::LANE, pack::slice_bytes(&lanes).to_vec());
     w.add(pack::LPTS, pack::slice_bytes(&lane_points).to_vec());
-    if target == Target::Vita {
+    if target.resident() {
         w.add(pack::GLVL, pack::slice_bytes(&glvl).to_vec());
         w.add(pack::GTEX, gtex);
     } else {

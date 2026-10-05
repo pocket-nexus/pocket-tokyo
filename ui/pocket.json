@@ -30,6 +30,12 @@
         "entry": "app/main-touch.tsx",
         "modality": { "touch": "primary", "buttons": false },
         "viewport": { "fixed": { "logical": [480, 320], "presentation": "native" } }
+      },
+      {
+        "id": "touch-wide",
+        "entry": "app/main-touch-wide.tsx",
+        "modality": { "touch": "primary", "buttons": false },
+        "viewport": { "fixed": { "logical": [640, 360], "presentation": "native" } }
       }
     ]
   }
