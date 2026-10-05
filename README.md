@@ -214,6 +214,33 @@ A stick, or a finger on the city, takes the eye off the tour where it is. On the
 
 On the handhelds the eye keeps 30 m above what stands under it and around it. On the tour it starts to rise two seconds before a tower and comes down after it.
 
+## Releases
+
+`bun tools/release.ts` builds every device's package from the checked-out commit and writes them to `dist/release/`, which Git ignores:
+
+```
+bun tools/release.ts [--targets vita,psp,3ds,ipod-touch] [--out dist/release] [--vita-gxp DIR] [--no-build] [--upload]
+```
+
+| Target | File | Holds |
+| --- | --- | --- |
+| `vita` | `pocket-tokyo-<version>.vpk` | the program, the `vita60` pack, the interface and the programs a console compiled |
+| `psp` | `pocket-tokyo-<version>-psp.zip` | `PSP/GAME/PocketTokyo/` for the root of a Memory Stick: `EBOOT.PBP`, the `psp30` pack and the interface |
+| `3ds` | `pocket-tokyo-<version>.3dsx` | the program, with the `n3ds30` pack and the interface in its ROMFS |
+| `ipod-touch` | `pocket-tokyo-<version>-ipod.ipa` | `Payload/PocketTokyo.app`, with the `ipod60` pack |
+
+**It needs the toolchains of the four device tools**: VitaSDK at `~/vitasdk` with `cargo-vita` and Rust `nightly-2026-05-28`; PocketJS's pinned PSP toolchain (`bun tools/bootstrap.ts` in `vendor/pocketjs`) with `pack-pbp`; Docker, for the devkitARM container, and Rust `nightly-2026-07-02`; the Xcode command line tools, `ldid` and PocketJS's iPod touch 4 toolchain (`bun ipodtouch4 doctor` in `vendor/pocketjs`). **The exported area is an input**: `fetch`, `tiles` and `export` in [From records to a frame](#from-records-to-a-frame) write `.pocket-build/city/shiba/ir`. It carries no record of the sources it came from, so the tool records its hash and cannot tell a stale export.
+
+For each target the tool cooks the profile's pack from `.pocket-build/city/shiba/ir` with this commit's compiler and runs the build a developer runs: `tools/tokyo.ts vpk`, `tools/psp.ts package`, `tools/n3ds.ts build`, `tools/ipod.ts package`. The version is the one in `ui/pocket.json`. A target that fails is listed with its error, the other targets build, and the exit status is 1. Each target's build output is in `.pocket-build/release/logs/`.
+
+`release.json`, beside the packages, records **the commit, the version, each package's size and SHA-256, the SHA-256 of the CityIR and of each pack, and the toolchains**: the pinned PocketJS revision, the `rustc` of each target, VitaSDK's compiler and `version_info.txt`, the PSP SDK's hash and the devkitARM image's digest.
+
+**The Vita's programs are an input.** SceShaccCg runs on a console, so the package carries the `.gxp` files a development run left in its share's `tokyo/gxp`, the ones `manifest.txt` there lists. `--vita-gxp DIR` names that directory; the default is `.pocket-build/vita-usb/share/tokyo/gxp`. Before the Vita build the tool checks each program against `vita/shaders`: the console names a program by an FNV-1a hash of its source, an FNV-1a step can be taken back, and a name taken back through this commit's file arrives at the hash's starting value or at the one state every scene program shares. The build stops, with the reason, when the manifest is missing, when a program was compiled from a source that has changed since, and when a source has no program. The numeric `#define`s a scene program starts with are not checked on the host (`scene_defines` in `vita/src/city.rs`: constants, and the pack's block size, margin and height range); `release.json` records the state they hash to.
+
+**All four packages are byte-identical across two builds of a commit on one computer.** The tool writes the `.zip`, the `.ipa` and the `.vpk` itself: entries in the order of their names (in the `.vpk`, `sce_sys/param.sfo` and `eboot.bin` first, as `vita-pack-vpk` has them), every date 1980-01-01, modes 0644 and 0755, deflate at level 6. A development build of the Vita program carries a random build id. For a release the tool names it (`POCKET_RELEASE_BUILD`, which `tools/vita.ts` reads): 32 hex digits from the commit, the `vita60` pack's hash and the hash of the programs' manifest; `release.json` records it.
+
+**Packages go to Pocket Studio and to no page on GitHub.** `--upload` runs `pocket-studio package <file> --target <id> --version <version>` for each package from the repository's root, where `pocket-studio register --title "Pocket Tokyo"` wrote `.pocket-studio.json` (ignored by Git). It refuses a checkout with uncommitted changes. It does not register the game, publish it or change its address; when the link file is missing it prints the commands that write it. `--no-build --upload` sends the packages `release.json` lists, after checking their hashes.
+
 ## Attribution
 
 3D city model, roof photos, bridges and street furniture: Project PLATEAU (MLIT Japan). Elevation and aerial photos: Geospatial Information Authority of Japan (GSI). Road network, railways and places: © OpenStreetMap contributors (ODbL); a compiled area is a derived database under the ODbL. Textures: Poly Haven (CC0). Trees: ez-tree (MIT). The model in `web/` is [Procedural Tokyo](https://github.com/jeantimex/tokyo) by Yong Su, under the MIT License (`web/LICENSE`).
