@@ -9,6 +9,9 @@
 //! 3. the far pass: the mid and the far level, with a frustum from where they
 //!    start to the horizon and the other quarter.
 //!
+//! A landmark is drawn in whichever of the two passes its distance puts it,
+//! or in both, from its own model for that distance.
+//!
 //! The GE has no programs. What the Vita's do is done with what it has:
 //!
 //! - **Day and night are two palettes of one picture.** Every picture is 8-bit
@@ -30,7 +33,7 @@ use core::ptr;
 use alloc::vec::Vec;
 use psp::sys::*;
 use psp::Align16;
-use tokyo_pack::{self as pack, kind, Batch, Block, Cell, City, HandPicture, Region, KINDS, SECTORS};
+use tokyo_pack::{self as pack, kind, Batch, Block, Cell, City, HandPicture, Landmark, Region, KINDS, SECTORS};
 use tokyo_sim::flight::Flight;
 use tokyo_sim::mat::{self, Mat4};
 use tokyo_sim::math::*;
@@ -161,7 +164,9 @@ pub struct Gfx {
     /// Where the eye is, and the frame's counts, between choosing a frame's draws and writing its list.
     chosen: (f32, u32),
     pub heights: Vec<u16>,
-    cards: Vec<u32>,
+    landmarks: Vec<Landmark>,
+    /// Where the far pass starts and the near pass ends, metres from the eye.
+    split: (f32, f32),
     lists: [Vec<Item>; KINDS],
     sky_vb: Vec<SkyVertex>,
     sky_dirs: Vec<V3>,
@@ -264,7 +269,7 @@ impl Gfx {
             })
             .collect();
         let shade = shade::start(&heights, &city, grounds)?;
-        let cards: Vec<u32> = batches.iter().enumerate().filter(|(_, b)| b.kind == kind::CARD).map(|(i, _)| i as u32).collect();
+        let landmarks: Vec<Landmark> = file.records(pack::LAND)?;
 
         // The sky's dome: unit directions, and the triangles between its rings.
         let mut sky_dirs = Vec::with_capacity(SKY_VERTS);
@@ -337,7 +342,8 @@ impl Gfx {
             _shade: shade,
             chosen: (f32::MAX, 0),
             heights,
-            cards,
+            landmarks,
+            split: (0.0, 0.0),
             lists: core::array::from_fn(|_| Vec::with_capacity(1024)),
             sky_vb: alloc::vec![SkyVertex::default(); SKY_VERTS],
             sky_dirs,
@@ -399,7 +405,9 @@ impl Gfx {
     #[allow(clippy::too_many_arguments)]
     unsafe fn pass(&mut self, k: usize, near: bool, eye: V3, streamer: &mut Streamer, lights: &[u32; SECTORS + 1], hour: &Hour, budget: &mut u32) {
         let c = self.city;
-        let size = [8usize, 12, 8][k];
+        let size = [8usize, 12, 8, 8][k];
+        // (a landmark's members are painted geometry: the solids' vertices)
+        let source = if k == kind::OPEN as usize { kind::SOLID as usize } else { k };
         let mut last = Last { frame: u32::MAX, sector: u32::MAX, vtx: ptr::null() };
         let mut bound = u32::MAX;
         let n = c.cells;
@@ -408,12 +416,19 @@ impl Gfx {
         let mut since_stall = 0;
         for i in 0..self.lists[k].len() {
             let item = self.lists[k][i];
-            if (item.cell != u32::MAX) != near {
+            let b = self.batches[item.batch as usize];
+            if k == kind::OPEN as usize {
+                // A landmark belongs to the pass its distance puts it in: to both when it stands across the two.
+                let from = mat::box_distance(eye, &b.min, &b.max);
+                let through = sqrt((b.max[0] - b.min[0]) * (b.max[0] - b.min[0]) + (b.max[1] - b.min[1]) * (b.max[1] - b.min[1]) + (b.max[2] - b.min[2]) * (b.max[2] - b.min[2]));
+                if if near { from >= self.split.1 } else { from + through <= self.split.0 } {
+                    continue;
+                }
+            } else if (item.cell != u32::MAX) != near {
                 continue;
             }
-            let b = self.batches[item.batch as usize];
             // ---- where its vertices are, and the picture of its ground
-            let (vtx, idx) = if near {
+            let (vtx, idx) = if item.cell != u32::MAX {
                 let (slot, rec) = streamer.slot(item.cell as usize);
                 let part = |p: usize| rec.parts[..p].iter().map(|s| (*s as usize + 15) & !15).sum::<usize>();
                 if k == kind::TOP as usize && bound != item.cell {
@@ -441,7 +456,7 @@ impl Gfx {
                     sceGuSetMatrix(MatrixMode::Texture, &m);
                     self.stats.binds += 1;
                 }
-                (self.vertices[k].as_ptr().add(b.vtx_first as usize * size), self.idx.as_ptr().add(b.idx_first as usize))
+                (self.vertices[source].as_ptr().add(b.vtx_first as usize * size), self.idx.as_ptr().add(b.idx_first as usize))
             };
             // ---- its place, as the eye sees it
             let frame = item.place << 1 | item.region as u32;
@@ -480,7 +495,7 @@ impl Gfx {
                 from += count;
                 self.stats.draws += 1;
                 self.stats.tris[k] += count / 3;
-                self.stats.level[if near { 0 } else if item.region { 2 } else { 1 }] += count / 3;
+                self.stats.level[if item.cell != u32::MAX { 0 } else if item.region { 2 } else { 1 }] += count / 3;
             }
         }
     }
@@ -527,65 +542,6 @@ impl Gfx {
         self.text_at = 0;
     }
 
-    /// The lattice towers: a picture with holes on four faces, over what is drawn. In each of the two ranges of
-    /// depth, the faces that look away first, then the ones that look at the eye through whose holes they show.
-    unsafe fn cards(&mut self, eye: V3, lights: &[u32; SECTORS + 1], hour: &Hour, budget: &mut u32, projections: [&ScePspFMatrix4; 2]) {
-        if self.lists[kind::CARD as usize].is_empty() {
-            return;
-        }
-        const HALF: f32 = 32768.0 / 65535.0;
-        sceGuEnable(GuState::Blend);
-        sceGuEnable(GuState::AlphaTest);
-        sceGuAlphaFunc(AlphaFunc::Greater, 12, 0xff);
-        sceGuTexFunc(TextureEffect::Modulate, TextureColorComponent::Rgba);
-        sceGuDepthMask(1);
-        sceGuEnable(GuState::CullFace);
-        sceGuSendCommandi(GeCommand::VertexType, vtype_wall().bits());
-        sceGuTexMapMode(TextureMapMode::TextureCoords, 0, 0);
-        sceGuTexWrap(GuTexWrapMode::Clamp, GuTexWrapMode::Clamp);
-        sceGuTexScale(1.0, pack::FACADE_V);
-        sceGuTexOffset(0.0, -pack::FACADE_V);
-        sceGuAmbient(lights[SECTORS]);
-        for i in 0..self.lists[kind::CARD as usize].len() {
-            let item = self.lists[kind::CARD as usize][i];
-            let b = self.batches[item.batch as usize];
-            let Some(nth) = self.cards.iter().position(|c| *c == item.batch) else { continue };
-            let which = self.blocks.len() + 1 + nth;
-            if which >= self.pictures.len() {
-                continue;
-            }
-            let p = self.pictures[which];
-            let data = self.htex.as_ptr().add(p.offset as usize);
-            let out = self.mixed.as_mut_ptr().add(which * 256);
-            mix(data as *const u32, out, &mut self.held[which], hour, false, budget);
-            bind(out, data.add(2048), p.width as u32, p.height as u32, p.levels);
-            let (origin, span) = view::frame_of(&self.city, item.place, false, false);
-            let s = [span[0] * HALF, span[1] * HALF, span[2] * HALF];
-            let m = ScePspFMatrix4 { x: vec4(s[0], 0.0, 0.0, 0.0), y: vec4(0.0, s[1], 0.0, 0.0), z: vec4(0.0, 0.0, s[2], 0.0), w: vec4(origin[0] + s[0] - eye.x, origin[1] + s[1] - eye.y, origin[2] + s[2] - eye.z, 1.0) };
-            sceGuSetMatrix(MatrixMode::Model, &m);
-            let vtx = self.vertices[kind::WALL as usize].as_ptr().add(b.vtx_first as usize * 12);
-            let idx = self.idx.as_ptr().add(b.idx_first as usize);
-            for (k, projection) in projections.into_iter().enumerate() {
-                sceGuSetMatrix(MatrixMode::Projection, projection);
-                if k == 0 {
-                    sceGuDepthRange(DEPTH_SPLIT, 0);
-                } else {
-                    sceGuDepthRange(65535, DEPTH_SPLIT);
-                }
-                for front in [FrontFaceDirection::Clockwise, FrontFaceDirection::CounterClockwise] {
-                    sceGuFrontFace(front);
-                    sceGuDrawArray(GuPrimitive::Triangles, vtype_wall(), b.idx_count as i32, idx as *const c_void, vtx as *const c_void);
-                    self.stats.draws += 1;
-                    self.stats.tris[kind::CARD as usize] += b.idx_count / 3;
-                }
-            }
-        }
-        sceGuDepthMask(0);
-        sceGuDisable(GuState::Blend);
-        sceGuDisable(GuState::AlphaTest);
-        sceGuTexFunc(TextureEffect::Modulate, TextureColorComponent::Rgb);
-    }
-
     /// Chooses the frame's draws. The GE may still be drawing the frame before.
     pub unsafe fn choose(&mut self, flight: &Flight, streamer: &mut Streamer) {
         self.stats = Stats::default();
@@ -595,7 +551,7 @@ impl Gfx {
         let planes = mat::planes(&vp);
         streamer.retire(&self.cells, eye, look, flight.show.near);
         let mut lists = core::mem::take(&mut self.lists);
-        let tables = view::Tables { city: &self.city, regions: &self.regions, blocks: &self.blocks, cells: &self.cells, batches: &self.batches, spans: &self.spans, cards: &self.cards };
+        let tables = view::Tables { city: &self.city, regions: &self.regions, blocks: &self.blocks, cells: &self.cells, batches: &self.batches, spans: &self.spans, landmarks: &self.landmarks };
         let show = view::Reach { split: true, ..flight.show };
         let counts = view::select(&tables, &planes, eye, &show, &|cell| streamer.ready(cell), &mut lists);
         self.lists = lists;
@@ -636,6 +592,7 @@ impl Gfx {
         // The mid level starts where the nearest cell without its near level is.
         let near_far = flight.show.near + self.city.block / self.city.cells as f32 * 1.5 + 60.0;
         let far_near = clamp(min(mid_from, flight.show.mid) * 0.8, 6.0, 600.0);
+        self.split = (far_near, near_far);
         let far_proj = fmatrix(&mat::perspective_gl(fov, aspect, far_near, 12000.0));
         let near_proj = fmatrix(&mat::perspective_gl(fov, aspect, 3.0, near_far));
         sceGuSetMatrix(MatrixMode::Projection, &far_proj);
@@ -705,8 +662,13 @@ impl Gfx {
             sceGuTexScale(1.0, 1.0);
             sceGuTexOffset(0.0, 0.0);
             self.pass(kind::SOLID as usize, near, eye, streamer, &lights, &hour, &mut budget);
+            // The landmarks' members, seen from both sides.
+            sceGuDisable(GuState::CullFace);
+            self.pass(kind::OPEN as usize, near, eye, streamer, &lights, &hour, &mut budget);
+            if self.option & 1 == 0 {
+                sceGuEnable(GuState::CullFace);
+            }
         }
-        self.cards(eye, &lights, &hour, &mut budget, [&far_proj, &near_proj]);
         self.stats.mixes = MIX_BUDGET - budget;
         sceGuDisable(GuState::Lighting);
         sceGuDisable(GuState::Fog);
