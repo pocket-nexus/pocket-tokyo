@@ -408,6 +408,13 @@ fn apply_control(v: &Value, s: &mut Settings, flight: &mut Flight, session: &mut
 /// The pad as the flow reads it: both sticks, ✕ to fly faster, R and L to climb and descend, SELECT
 /// for the tour, left and right on the d-pad for the clock, and START for when no interface is on
 /// the screen.
+/// Display refreshes from the count `then` to the count `now`. The display's counter has 16 bits: it starts
+/// again at 0 after 65 536 refreshes (18 minutes), and a plain difference across that point is -65 535, which
+/// a loop that waits for one refresh takes 18 more minutes to see pass.
+fn refreshes(now: i32, then: i32) -> i32 {
+    now.wrapping_sub(then) & 0xffff
+}
+
 fn session_pad(p: &input::Pad) -> Pad {
     let mut b = 0;
     for (bit, to) in [(P_CROSS, pad::FAST), (P_R, pad::UP), (P_L, pad::DOWN), (P_SELECT, pad::TOUR), (P_LEFT, pad::EARLIER), (P_RIGHT, pad::LATER), (P_START, pad::MENU)] {
@@ -457,7 +464,7 @@ impl Timing {
 fn main() {
     unsafe {
         // Development builds take boot switches from the USB share:
-        // {"msaa": 0 | 2 | 4, "title": false, "ground": 512, "mode": "flight", "tour": false, "pace": 1}.
+        // {"msaa": 0 | 2 | 4, "title": false, "ground": 1024, "mode": "flight", "tour": false, "pace": 1}.
         let live = cfg!(feature = "usb-debug");
         let boot: Value = if live { hostfs::read(&format!("{}/boot.json", paths::HOST), 4096).and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or(Value::Null) } else { Value::Null };
         let samples = boot["msaa"].as_u64().unwrap_or(DEFAULT_MSAA);
@@ -505,14 +512,14 @@ fn main() {
             let meta: Value = serde_json::from_slice(&p.read(tokyo_pack::META)?).map_err(|e| e.to_string())?;
             let mut gpu = Gpu::new(live)?;
             // Video memory in blocks of 4 MiB, so that the last block leaves at most that much unused. The
-            // interface's glyph pages and map take 15 MB of the same memory (vita2d keeps its textures there,
-            // 32 bits a texel at two samples a pixel), which leaves the city 58 MB: 40 MB with ground pictures
-            // of 512 texels, 65 MB with 1024, which no longer fit. What the GPU samples stays in video memory:
-            // with the shadow targets in GPU-mapped main memory a night tour had 26 late frames in 30 s.
+            // interface's glyph pages are there too, one byte a texel (PocketJS's Vita host), beside its map:
+            // 4 MB, which leaves the city room for ground pictures of 1024 texels (65 MB; 69 MB reserved in
+            // all). What the GPU samples stays in video memory: with the shadow targets in GPU-mapped main
+            // memory a night tour had 26 late frames in 30 s.
             let mut vram = Arena::new(Kind::Cdram, 4 * 1024 * 1024);
             let mut targets = Arena::new(Kind::Main, 4 * 1024 * 1024);
             let post = Post::new(&mut gpu, &mut vram, &mut targets, msaa)?;
-            let ground_top = boot["ground"].as_u64().unwrap_or(512) as u32;
+            let ground_top = boot["ground"].as_u64().unwrap_or(1024) as u32;
             let city = CityGpu::load(&mut p, &mut gpu, &mut vram, msaa.gxm(), ground_top, |line| shell.frame(Mode::Loading, line))?;
             let cars = cars::Cars::new(&mut gpu, &city::scene_defines(&city.city), msaa.gxm())?;
             gpu.finish();
@@ -622,7 +629,7 @@ fn main() {
                 mode_was = session.mode;
             }
             let vcount = sceDisplayGetVcount();
-            let vblanks = (vcount.wrapping_sub(last_vcount)).clamp(1, 4);
+            let vblanks = refreshes(vcount, last_vcount).clamp(1, 4);
             last_vcount = vcount;
             let dt = vblanks as f32 / 60.0;
             seconds += dt;
@@ -777,12 +784,12 @@ fn main() {
             let worked = t_frame.elapsed().saturating_sub(waited);
             g::vita2d_swap_buffers();
             // Hold the pace: a frame is shown for `pace` refreshes.
-            while sceDisplayGetVcount().wrapping_sub(last_vcount) < set.pace {
+            while refreshes(sceDisplayGetVcount(), last_vcount) < set.pace {
                 sceDisplayWaitVblankStart();
             }
 
             let now = Instant::now();
-            let shown = sceDisplayGetVcount().wrapping_sub(last_vcount);
+            let shown = refreshes(sceDisplayGetVcount(), last_vcount);
             timing.push((now - last).as_secs_f32() * 1000.0, shown > set.pace);
             if shown > set.pace {
                 if worked.as_secs_f32() > 0.012 {
