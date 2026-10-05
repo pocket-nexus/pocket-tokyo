@@ -94,8 +94,8 @@ Measured on the console (clocks at 444 / 222 MHz):
 | GXM's parameter buffer at its default 16 MB | overflows near 150 000 triangles in view; the frame then takes three times as long. `vita/build.rs` raises it to 32 MB |
 | Shadow lookup | 1.1 ms a frame with its own texture coordinate, 2.9 ms read from the `.zw` of a shared one |
 | Off-screen scene, bloom chain and composite | 3.75 ms; drawing into the display surface removes it |
-| The interface | 1.0 ms a turn (script, layout, two ticks of the UI core) at 30 turns a second; 0.75 ms of CPU a frame to draw its list; 35 ms a collection of its heap; a list built at its first opening is one turn of 50 to 80 ms |
-| The tour with the interface | 150 s from 15:36 to 20:04: 9 000 frames, 0 late, worst frame 17.7 ms, 86 800 to 201 000 triangles (mean 159 000). Before it, with ground pictures of 512 texels as now: 9 010 frames, 0 late, worst 16.9 ms, mean 161 300 |
+| The interface | 1.0 ms a turn (script, layout, two ticks of the UI core) at 30 turns a second; 0.75 ms of CPU a frame to draw its list; 35 ms a collection of its heap; a list is built the first time it is shown, in one turn of up to 71 ms (one late frame), and stays built |
+| The tour with the interface | 150 s from 15:36 to 20:04: 9 000 frames, 0 late, worst frame 18.7 ms, 86 700 to 201 300 triangles (mean 159 300). Before it, with ground pictures of 512 texels as now: 9 010 frames, 0 late, worst 16.9 ms, mean 161 300 |
 | The flight's instruments on the GPU | with them the tour's heaviest stretch at dusk had 6 late frames in 9 000 under the triangle budget alone; none with the governor that follows the GPU |
 | One clip in the instruments | a night tour's first 30 s: 8 to 11 late frames with the compass clipped, 2 to 4 with its marks faded instead (both before the governor followed the GPU) |
 
