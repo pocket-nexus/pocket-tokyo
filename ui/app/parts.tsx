@@ -97,7 +97,8 @@ export function Clock(props: { host: Host; compact?: boolean }) {
   return (
     <View class="relative flex-col" style={{ width: width() }}>
       <Plate width={width()} height={props.compact ? 40 : 46} />
-      <Text ref={word} class="text-xs font-bold tracking-wide" style={{ width: width(), height: 14, textColor: DIM }}>MIDDAY</Text>
+      {/* The compact clock stands in a column 65 pixels wide: its longest word fits without the wide tracking. */}
+      <Text ref={word} class={props.compact ? "text-xs font-bold" : "text-xs font-bold tracking-wide"} style={{ width: width(), height: 14, textColor: DIM }}>MIDDAY</Text>
       <Text ref={digits} class={props.compact ? "text-lg font-bold" : "text-2xl font-bold"} style={{ width: width(), height: props.compact ? 24 : 30, textColor: INK }}>12:00</Text>
     </View>
   );
