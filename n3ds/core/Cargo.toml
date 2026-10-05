@@ -21,12 +21,16 @@ crate-type = ["staticlib"]
 # The ARM11's VFP has a square root instruction, and computes doubles at half the speed of singles.
 tokyo-sim = { path = "../../crates/tokyo-sim", default-features = false, features = ["hw-sqrt", "single-float"] }
 tokyo-pack = { path = "../../crates/tokyo-pack", default-features = false }
+# The flow around the flight, and the interface's channel as the C symbols PocketJS's guest driver calls (svcwire.h).
+tokyo-interface = { path = "../../crates/tokyo-interface", default-features = false, features = ["wire"] }
 
 [profile.release]
 # The target defaults to unwinding; a static library in a libctru program has no unwinder.
 panic = "abort"
 opt-level = 3
 codegen-units = 1
-lto = "thin"
+# Whole-program: the library keeps its allocator and its panic handler to itself, and links beside
+# PocketJS's UI core, which is built the same way.
+lto = true
 
 [workspace]
