@@ -2,14 +2,14 @@
 
 Tokyo, flown over on a PS Vita, a PSP, a Nintendo 3DS, an iPod touch 4 and a Redmi 1S. The city is the real one: 14 753 buildings of the Shiba district around Tokyo Tower, from Japan's open 3D city model (Project PLATEAU), OpenStreetMap and the national elevation survey. The sun crosses the sky, the shadows turn with it, the windows and the street lamps come on at dusk, and on the Vita the traffic runs on the real road graph. **960 × 544 with 4× multisampling at 60 frames per second on the Vita; 480 × 320 with 4× multisampling at 60 on the iPod touch; the panel's own 1280 × 720 at 60 on the Redmi 1S; 30 frames per second on the PSP and the 3DS.**
 
-This repository is private until its owner says otherwise. Compiled city data keeps the terms of its sources ([Attribution](#attribution)).
+The packages for each device are on [Pocket Studio](https://studio.pocket.nexus) for its members. Compiled city data keeps the terms of its sources ([Attribution](#attribution)).
 
 | | Screen | Renderer | Measured |
 | --- | --- | --- | --- |
 | PS Vita | 960 × 544, 4× MSAA, shadows that follow the clock, night glow | GXM, programs compiled on the device | 150 s of the tour from 15:36 to 20:04, with the traffic and the interface: 9 010 frames, **0 late**, worst frame 17.6 ms, 86 800 to 200 200 triangles a frame (mean 158 200), 222 draws |
 | PSP | 480 × 272, shadows that follow the clock | GE, fixed function, one display list a frame | 150 s from the title into the tour, with the interface over it (PSPLINK, 333 MHz): 4 500 frames, **5 late** (3 of them in the first 5 s, while the tour's first cells are read), worst frame 50 ms, 22 800 to 42 100 triangles a frame (mean 37 600), 1 255 draws |
 | Nintendo 3DS | 400 × 240 on the upper screen, shadows that follow the clock; the area from above and the day as a bar on the lower one | PICA200: four vertex programs, three combiner stages | Old 3DS, 90 s of the tour with the interface on both screens: 2 728 frames, **0 late**, 21 400 to 53 600 triangles a frame (mean 40 000), 276 draws, 17.1 ms of CPU and 17.5 ms of GPU a frame |
-| iPod touch 4 | 480 × 320, 4× MSAA, shadows that follow the clock, the tower's lamps by night | OpenGL ES 2 on the SGX535: seven programs | 150 s of the tour with the interface over it, from 15:35 to 20:05 (iOS 6.1.6): 8 965 frames, **37 late** (0.41 %), worst frame 39.8 ms, 16 600 to 27 500 triangles a frame (mean 22 200), 205 draws |
+| iPod touch 4 | 480 × 320, 4× MSAA, shadows that follow the clock, the tower floodlit and its lamps by night | OpenGL ES 2 on the SGX535: seven programs | 150 s of the tour with the interface over it, from 15:35 to 20:05 (iOS 6.1.6): 8 965 frames, **37 late** (0.41 %), worst frame 39.8 ms, 16 600 to 27 500 triangles a frame (mean 22 200), 205 draws |
 | Redmi 1S | 1280 × 720, shadows that follow the clock, the lamps' light on the ground and the tower's lamps by night | OpenGL ES 3.0 on the Adreno 305: eight programs | 150 s of the tour with the interface over it, from 15:50 to 20:23 (MIUI V5, the SoC at 57 to 59 °C): 8 937 frames, **73 late** (0.82 %; 43 of them within 10 s of the dusk, when the walls read the shadows and their rooms), worst frame 45.4 ms, 46 300 to 93 500 triangles a frame (mean 66 800), 135 draws |
 
 The city is modelled once as Three.js content that runs in a browser, and a compiler lowers it to what one console draws:
@@ -123,7 +123,9 @@ A landmark is a building the reference builds member by member from a model of i
 
 A model for another landmark reports its members the same way and needs nothing else in the compiler or on a device. The Vita draws the reference's own triangles of the tower.
 
-A profile that gives `landmarks.lamps` a size per level also gets the model's lamps: each is three squares crossed, in the lamp's colour with alpha 255, which a vertex program reads as "shines by itself once the night has come". The iPod touch's profile does (118 lamps on the tower: 4 096, 2 440 and 1 272 triangles); a machine that lights a group of faces with one colour has no use for them.
+**A member's alpha is how far it shines by its own colour once the night has come.** A landmark's steel and decks stand in floodlights: alpha 191, 0.75 of their colour, which the vertex program of the 3DS and of the iPod touch adds to the light of the hour (a wall keeps 0.16 to 0.26 of its colour by night, and the tower stood that dark among lit windows). The Vita's pack gives its tower the same 0.75. The PSP draws every painted face at its full colour by night and reads no alpha: its pack is the same bytes.
+
+A profile that gives `landmarks.lamps` a size per level also gets the model's lamps: each is three squares crossed, in the lamp's colour with alpha 255, lit whole. The iPod touch's profile does (118 lamps on the tower: 4 096, 2 440 and 1 272 triangles); a machine that lights a group of faces with one colour has no use for them.
 
 ## The frame on the PSP
 
@@ -139,7 +141,7 @@ A profile that gives `landmarks.lamps` a size per level also gets the model's la
 ## The frame on the 3DS
 
 - One pass: the depth buffer has 24 bits. The near plane is at 12 m: the haze is a table of 128 steps over the depth buffer's own values, and a nearer plane leaves the whole city to its first step.
-- Ground: (light × shadow + lamps × night) × picture, in three combiner stages over three textures. Walls: light × tint × facade by day, plus night × what the windows emit.
+- Ground: (light × shadow + lamps × night) × picture, in three combiner stages over three textures. Walls: light × tint × facade by day, plus night × what the windows emit. Painted geometry: (light + night × the vertex's alpha) × its colour, in the vertex program.
 - Every texture is in linear memory, and every vertex program writes all three texture coordinates: a unit that stays bound is read at them.
 - **The interface** is the PocketJS guest of `ui/` (the `dual` presentation), compiled in beside the core: PocketJS's 3DS UI core, its citro3d backend and QuickJS. It boots before the pack is read and shows the reading. Its turn runs before `C3D_FrameBegin`, beside the GPU's work on the frame before, and its draws read texture unit 0 alone.
 - **The lower screen** is the interface's second surface, a colour target of its own: the area from above with the eye's mark, the Menu and Tour keys, the day as a bar a stylus turns, and the lists. The upper surface is drawn over the city every frame; the lower one on the frames its list differs from the one it was last drawn from, **8 times a second on the tour**.
@@ -178,10 +180,12 @@ Every 2D pixel comes from one PocketJS app, `ui/`: the title, the instruments ov
 | --- | --- | --- | --- |
 | `presentations/single.tsx` | PSP, PS Vita | 480 × 272 logical; the Vita rasters it at 2× | Lists walked by the pad under a legend; on the Vita a row also takes a tap |
 | `presentations/dual.tsx` | Nintendo 3DS | 400 × 240 over 320 × 240 | The lower screen: the area from above with the eye on it, the Menu and Tour keys, and **the day as a bar a stylus turns** |
-| `presentations/touch.tsx` | iPod touch 4 | 480 × 320 | A stick, three keys (up, down, fast), a finger on the city to turn the view; a tap on the clock opens the day as a bar |
-| the same, entered through `main-touch-wide.tsx` | Redmi 1S | 640 × 360 logical, rastered at 2× for the panel's 1280 × 720 | Nothing: `panel(640, 360)` gives the presentation its screen before it mounts, and every part keeps to the edge it is anchored to |
+| `presentations/touch.tsx` | iPod touch 4 | 480 × 320 | A stick, three keys (up, down, fast), a finger on the city to turn the view; a tap on the clock opens the day as a bar; rows a finger presses, marked under it |
+| the same, entered through `main-touch-wide.tsx` | Redmi 1S | 640 × 360 logical, rastered at 2× for the panel's 1280 × 720 | Nothing: `panel(640, 360)` gives the presentation its screen before it mounts. The title's rows stand at the left where the iPod touch's do, a list's panel in the middle of the screen at the iPod touch's size, and each control at the edge it hangs from |
 
 A presentation decides where things go and how large they are. What the clock, the compass tape, a list row or the map looks like is in `ui/app/parts.tsx` once, and what the lists hold is in `ui/app/flight.ts` once.
+
+**The title, the lists, the menu and the strip under them stand in the same place on every device.** A presentation changes a row's height (26 to 30 px under a pad; 36 px on the touch panel's title and 44 px in its lists) and adds the controls its device alone has. The touch panel's strip names no button, the way back stands in a list's heading, and the six hours stand two abreast under the day's bar, so that each is 44 px tall.
 
 - **The protocol** (`ui/app/protocol.ts`, `crates/tokyo-interface`) is JSON lines over PocketJS's `pocket.overlay` service, answered in the process: the QuickJS API on the Vita and the PSP, the `svcwire` symbols of PocketJS's C hosts on the 3DS, the iPod touch and the Redmi 1S. The renderer sends the members of its state that changed since the last line; the interface sends `start`, `menu`, `tour`, `hour`, `title`, `option`, `prefs`, and from a touch panel `drive` (the stick and the held keys) and `look` (pixels a finger dragged).
 - **The flow** is `tokyo_interface::Session`, one implementation for every device, around `tokyo_sim::flight::Flight`: behind the title the tour flies; a flight is the tour's or the pad's; under the menu the pad is the interface's and the city keeps moving. With no guest on the screen (its files are missing, or it threw) the menu button hands the eye to the tour and takes it back.

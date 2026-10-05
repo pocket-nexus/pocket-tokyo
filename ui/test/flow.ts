@@ -35,11 +35,11 @@ assert.equal(mock.state.options[1].value, 1);
 
 // The hours, from the title: the clock is turned to dusk.
 if (touch) {
-  tap(80, 280, "l", "b");
+  tap(100, 200);
   rig.step(6);
-  tap(240, 174, "c", "c");
+  tap(145, 206, "c", "c");
   rig.step(4);
-  tap(100, 34, "c", "c");
+  tap(100, 30, "c", "c");
 } else {
   choose(2);
   choose(4);
@@ -50,7 +50,7 @@ assert.deepEqual(asked(), [{ type: "hour", minutes: 1090 }]);
 assert.equal(mock.state.t[0], 1090);
 
 // The title's first choice starts the tour.
-if (touch) tap(130, 146);
+if (touch) tap(100, 128);
 else choose(0);
 rig.step(4);
 assert.deepEqual(asked(), [{ type: "start", tour: true }]);
@@ -118,9 +118,9 @@ rig.step(8);
 assert.deepEqual(asked(), [{ type: "menu", on: true }]);
 assert.equal(mock.state.mode, "menu");
 if (touch) {
-  tap(340, 166, "c", "c");
+  tap(340, 162, "c", "c");
   rig.step(6);
-  tap(340, 122, "c", "c");
+  tap(340, 118, "c", "c");
 } else {
   choose(3);
   choose(1);
@@ -130,10 +130,10 @@ const kept = { options: { invert: 1, stats: 1 } };
 assert.deepEqual(asked(), [{ type: "option", key: "stats", value: 1 }, { type: "prefs", value: JSON.stringify(kept) }]);
 assert.ok(mock.state.stats.length > 0);
 if (touch) {
-  tap(256, 34, "c", "c");
+  tap(256, 30, "c", "c");
   rig.step(6);
   // The second row hands the eye to the tour, or takes it, and leaves the menu.
-  tap(340, 78, "c", "c");
+  tap(340, 74, "c", "c");
 } else {
   rig.press(BTN.CROSS);
   rig.step(6);
@@ -147,7 +147,7 @@ assert.equal(mock.state.mode, "flight");
 if (touch) {
   tap(32, 32);
   rig.step(8);
-  tap(340, 254, "c", "c");
+  tap(340, 250, "c", "c");
 } else {
   rig.press(BTN.START);
   rig.step(8);

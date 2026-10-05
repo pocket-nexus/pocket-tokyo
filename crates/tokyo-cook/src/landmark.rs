@@ -12,16 +12,23 @@
 //! Boxes (decks, masts) are in all three. No level is a simplification of
 //! another: each is built from the members.
 //!
+//! A member's alpha is how far it shines by its own colour once the night has
+//! come, which a vertex program adds to the light of the hour: the steel and
+//! the decks stand in floodlights (`FLOODLIT`), a lamp is lit whole (255).
+//!
 //! Lamps are in a level when the profile gives it a size for them
-//! (`landmarks.lamps`): a lamp is three squares crossed, in its own colour with
-//! alpha 255, which a vertex program takes as "lit by itself once the night
-//! has come". A machine that lights a group of faces with one colour has no
-//! use for them.
+//! (`landmarks.lamps`): a lamp is three squares crossed, in its own colour. A
+//! machine that lights a group of faces with one colour has no use for
+//! either: by night it draws every painted face at its full colour.
 
 use crate::city::SolidTri;
 use crate::geom::{cross, dot, face, norm, srgb8, sub, P3};
 use crate::ir::Bundle;
 use serde_json::Value;
+
+/// How far a landmark's members shine by their own colour under its floodlights, of 255. The Vita's pack
+/// gives the tower's steel 120 and its program 1.6 times that (`buildings.rs`, `solid_v.cg`): the same 0.75.
+pub const FLOODLIT: u8 = 191;
 
 pub struct Beam {
     pub p: P3,
@@ -59,8 +66,8 @@ pub fn read(path: &std::path::Path) -> Result<Vec<Landmark>, String> {
     }
     let b = Bundle::read(path)?;
     let (beams, boxes, lamps) = (b.f32("beams"), b.f32("boxes"), b.f32("lamps"));
-    let color = |c: &[f32]| [srgb8(c[0]), srgb8(c[1]), srgb8(c[2]), 0];
-    // (the model marks a lamp by a colour brighter than 1: its hue is kept, and alpha 255 carries the mark)
+    let color = |c: &[f32]| [srgb8(c[0]), srgb8(c[1]), srgb8(c[2]), FLOODLIT];
+    // (the model marks a lamp by a colour brighter than 1: its hue is kept, and it is lit whole)
     let glow = |c: &[f32]| {
         let most = c[0].max(c[1]).max(c[2]).max(1.0);
         [srgb8(c[0] / most), srgb8(c[1] / most), srgb8(c[2] / most), 255]
