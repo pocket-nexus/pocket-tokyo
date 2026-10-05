@@ -5,6 +5,7 @@ use wgpu::{Device, Queue, Surface, Texture, TextureFormat, TextureView};
 /// The depth buffer of every screen: 24 bits or more.
 pub const DEPTH: TextureFormat = TextureFormat::Depth24Plus;
 
+#[derive(Clone)]
 pub struct Gpu {
     pub device: Device,
     pub queue: Queue,
@@ -87,6 +88,12 @@ pub struct Frame {
 }
 
 impl Frame {
+    /// The picture the display is handed: one sample a pixel, the samples resolved into it when the pass has
+    /// ended. A pass after the scene's draws into it.
+    pub fn shown(&self) -> &TextureView {
+        self.resolve.as_ref().unwrap_or(&self.colour)
+    }
+
     /// The frame's one pass over the whole screen, cleared to `clear`.
     pub fn pass<'a>(&'a self, encoder: &'a mut wgpu::CommandEncoder, clear: [f32; 3]) -> wgpu::RenderPass<'a> {
         encoder.begin_render_pass(&wgpu::RenderPassDescriptor {

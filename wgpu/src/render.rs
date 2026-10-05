@@ -18,10 +18,14 @@
 //!   levels.
 //! - What changes from one place's draws to the next (the matrix, where the
 //!   pictures lie) is a record of one buffer, written once a frame.
-//! - Nothing is laid over the frame here: the interface is a pass of its own.
+//! - The interface is not read in the scene's programs: it is a pass of its
+//!   own over the resolved frame (`pocket_web_wgpu::overlay`).
+//! - A block's picture of the ground arrives after the first frame. Until it
+//!   has, the block's ground and roofs are drawn in one flat colour.
 
 use bytemuck::{Pod, Zeroable};
 use pocket_web_wgpu::gpu::{Gpu, Screen, DEPTH};
+use pocket_web_wgpu::overlay::Overlay;
 use pocket_web_wgpu::picture;
 use pocket_web_wgpu::wgpu::{self, util::DeviceExt};
 use tokyo_core::{SkyVertex, View, SLOTS};
@@ -38,6 +42,8 @@ pub const FAR_PLANE: f32 = 12000.0;
 /// Haze per metre, and the most a point takes of it (the Vita's values).
 const HAZE: f32 = 0.00022;
 const HAZE_MOST: f32 = 0.94;
+/// The ground and the roofs of a block whose picture has not arrived: the mean colour of Shiba's pictures.
+const FLAT: [u8; 4] = [122, 128, 122, 255];
 /// Records of `Place` a frame has room for at the start; the buffer grows when a frame needs more.
 const PLACES: usize = 1024;
 
@@ -130,7 +136,9 @@ pub struct Renderer {
     place_room: usize,
     city_vertices: [wgpu::Buffer; 3],
     city_indices: wgpu::Buffer,
-    block_pictures: Vec<wgpu::BindGroup>,
+    /// A block's picture of the ground, once it has arrived; `flat` stands in until then.
+    block_pictures: Vec<Option<wgpu::BindGroup>>,
+    flat: wgpu::BindGroup,
     facades: wgpu::BindGroup,
     ground_sampler: wgpu::Sampler,
     shadows: wgpu::Texture,
@@ -250,8 +258,9 @@ fn programs(gpu: &Gpu, shader: &wgpu::ShaderModule, layouts: &Layouts, format: w
 }
 
 impl Renderer {
-    /// Hands what the pack keeps in memory to the GPU.
-    pub fn new(gpu: &Gpu, screen: &Screen, tables: &Tables, stays: &Stays) -> Result<Renderer, String> {
+    /// Hands what the pack keeps in memory to the GPU, for a screen of this format and this many samples a
+    /// pixel (a frame for another builds its programs again).
+    pub fn new(gpu: &Gpu, format: wgpu::TextureFormat, samples: u32, tables: &Tables, stays: &Stays) -> Result<Renderer, String> {
         let device = &gpu.device;
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("city"), source: wgpu::ShaderSource::Wgsl(include_str!("shaders/city.wgsl").into()) });
         let layouts = Layouts::new(gpu);
@@ -284,37 +293,34 @@ impl Renderer {
         let facade_sampler = sampler("facades", wgpu::AddressMode::Repeat, 1);
         let map_sampler = sampler("over the city", wgpu::AddressMode::ClampToEdge, 1);
 
-        let blocks = tables.blocks.len();
-        let texels = |p: &tokyo_pack::HandPicture, at: usize| -> Result<&[u8], String> {
-            let size = picture::stored_bytes(p.width as u32, p.height as u32, p.levels);
-            stays.texels.get(p.offset as usize + at..p.offset as usize + at + size).ok_or_else(|| "a picture of the pack is cut short".into())
-        };
-        let mut block_pictures = Vec::with_capacity(blocks);
-        for p in &stays.pictures[..blocks] {
-            let texture = picture::create(gpu, "block", p.width as u32, p.height as u32);
-            picture::write(gpu, &texture, texels(p, 0)?, p.width as u32, p.height as u32, p.levels);
-            block_pictures.push(device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("block"),
+        let ground = |texture: &wgpu::Texture| {
+            device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("ground"),
                 layout: &layouts.picture,
-                entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&view_of(&texture)) }, wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&ground_sampler) }],
-            }));
-        }
+                entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&view_of(texture)) }, wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&ground_sampler) }],
+            })
+        };
+        let flat = picture::create(gpu, "flat", 1, 1);
+        gpu.queue.write_texture(flat.as_image_copy(), &FLAT, wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(4), rows_per_image: Some(1) }, wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 });
+        let flat = ground(&flat);
         // The facades by day, then what their windows emit: two pictures of one size, one after the other.
-        let f = &stays.pictures[blocks];
+        let f = &tables.pictures[tables.blocks.len()];
         let pair = picture::stored_bytes(f.width as u32, f.height as u32, f.levels);
-        let facade = [0, 1].map(|k| -> Result<wgpu::Texture, String> {
+        if stays.facades.len() < 2 * pair {
+            return Err("the pack's facades are cut short".into());
+        }
+        let [day, night] = [0, 1].map(|k| {
             let texture = picture::create(gpu, "facades", f.width as u32, f.height as u32);
-            picture::write(gpu, &texture, texels(f, k * pair)?, f.width as u32, f.height as u32, f.levels);
-            Ok(texture)
+            picture::write(gpu, &texture, &stays.facades[k * pair..(k + 1) * pair], f.width as u32, f.height as u32, f.levels);
+            texture
         });
-        let [day, night] = facade;
         let facades = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("facades"),
             layout: &layouts.facades,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&view_of(&day?)) },
+                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&view_of(&day)) },
                 wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&facade_sampler) },
-                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&view_of(&night?)) },
+                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&view_of(&night)) },
             ],
         });
         let lamps = picture::create(gpu, "lamps", MAP_SIDE, MAP_SIDE);
@@ -350,8 +356,8 @@ impl Renderer {
         let sky_vertices = empty("sky vertices", (sky::DOME_VERTS * size_of::<SkyVertex>()) as u64, wgpu::BufferUsages::VERTEX);
 
         Ok(Renderer {
-            programs: programs(gpu, &shader, &layouts, screen.format, screen.samples),
-            built_for: (screen.format, screen.samples),
+            programs: programs(gpu, &shader, &layouts, format, samples),
+            built_for: (format, samples),
             shader,
             layouts,
             frame_buffer,
@@ -362,7 +368,8 @@ impl Renderer {
             place_room: PLACES,
             city_vertices,
             city_indices,
-            block_pictures,
+            block_pictures: (0..tables.blocks.len()).map(|_| None).collect(),
+            flat,
             facades,
             ground_sampler,
             shadows,
@@ -384,6 +391,27 @@ impl Renderer {
             entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding { buffer: &buffer, offset: 0, size: wgpu::BufferSize::new(size_of::<PlaceUniform>() as u64) }) }],
         });
         (buffer, group)
+    }
+
+    /// A block's picture of the ground that has arrived: its texels, as the pack stores them.
+    pub fn block(&mut self, gpu: &Gpu, tables: &Tables, block: usize, texels: &[u8]) -> Result<(), String> {
+        let p = &tables.pictures[block];
+        if texels.len() < picture::stored_bytes(p.width as u32, p.height as u32, p.levels) {
+            return Err("a block's picture is cut short".into());
+        }
+        let texture = picture::create(gpu, "block", p.width as u32, p.height as u32);
+        picture::write(gpu, &texture, texels, p.width as u32, p.height as u32, p.levels);
+        self.block_pictures[block] = Some(gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("block"),
+            layout: &self.layouts.picture,
+            entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&view_of(&texture)) }, wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&self.ground_sampler) }],
+        }));
+        Ok(())
+    }
+
+    /// Whether a block's picture has arrived.
+    pub fn has_block(&self, block: usize) -> bool {
+        self.block_pictures[block].is_some()
     }
 
     /// A cell's record that has arrived for a slot: its vertices, indices and picture go to the GPU.
@@ -479,8 +507,8 @@ impl Renderer {
     }
 
     /// One frame into the screen. `lists`: the frame's draws by kind, as the core chose them for this screen's
-    /// shape.
-    pub fn frame(&mut self, gpu: &Gpu, screen: &Screen, tables: &Tables, view: &View, lists: [&[Item]; KINDS]) -> Result<Stats, String> {
+    /// shape. `over`: what is laid over the scene, the interface.
+    pub fn frame(&mut self, gpu: &Gpu, screen: &Screen, tables: &Tables, view: &View, lists: [&[Item]; KINDS], over: &Overlay) -> Result<Stats, String> {
         if self.built_for != (screen.format, screen.samples) {
             self.programs = programs(gpu, &self.shader, &self.layouts, screen.format, screen.samples);
             self.built_for = (screen.format, screen.samples);
@@ -565,7 +593,7 @@ impl Renderer {
                     }
                     if k == kind::TOP as usize && bound != d.picture {
                         let group = match d.picture {
-                            Picture::Block(block) => self.block_pictures.get(block as usize),
+                            Picture::Block(block) => self.block_pictures.get(block as usize).map(|p| p.as_ref().unwrap_or(&self.flat)),
                             Picture::Slot(slot) => self.slots[slot as usize].picture.as_ref().map(|p| &p.0),
                             Picture::None => None,
                         };
@@ -594,6 +622,7 @@ impl Renderer {
                 }
             }
         }
+        over.draw(&mut encoder, &target);
         gpu.queue.submit([encoder.finish()]);
         target.present();
         Ok(stats)

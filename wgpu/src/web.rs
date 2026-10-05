@@ -1,8 +1,12 @@
 //! The tab's side: what the page calls (`page/main.js`).
 //!
-//! The page plays the Pocket3D title card, gives this a canvas and the pack's
-//! URL, and then calls `frame` from its frame loop with the pad as its keys
-//! make it. Everything a frame does is in `app`.
+//! The page plays the Pocket3D title card and opens the shell on a canvas
+//! ([`Tokyo::open`]); the city is read beside the frames ([`Reader::read`])
+//! and handed in when it is there ([`Tokyo::fly`]). A frame is `step`, the
+//! turn of the interface's guest, which the page runs in a realm of its own
+//! and whose lines pass through `heard` and `say`, then `draw`. When what the
+//! guest shows has changed, the page hands its picture to `overlay`.
+//! Everything a frame does is in `app`.
 //!
 //! The shadows are swept in a worker of the page (`page/sweep.js`), which
 //! runs this module again with the city's heights alone ([`Sweeps`]): a sweep
@@ -14,10 +18,10 @@ use std::rc::Rc;
 
 use pocket_web_wgpu::gpu::{Gpu, Screen};
 use pocket_web_wgpu::source::Source;
-use tokyo_core::Pad;
+use pocket_web_wgpu::wgpu::TextureFormat;
 use wasm_bindgen::prelude::*;
 
-use crate::app::{App, Shape, SweepHere, Sweeper, SHAPES};
+use crate::app::{self, App, Held, Shape, SweepHere, Sweeper, SHAPES};
 use crate::pack::Tables;
 
 fn describe(s: &Shape) -> String {
@@ -35,38 +39,129 @@ pub struct Tokyo {
     app: App,
 }
 
+/// What reads the city beside the frames: the GPU the shell draws with, and the screen its programs are for.
+#[wasm_bindgen]
+pub struct Reader {
+    gpu: Gpu,
+    format: TextureFormat,
+    samples: u32,
+}
+
+/// The city once the pack's head has been read.
+#[wasm_bindgen]
+pub struct City {
+    city: app::City,
+}
+
+#[wasm_bindgen]
+impl Reader {
+    /// Reads the head of the pack at `url`: the pack's file, on a server that answers byte ranges, or the
+    /// manifest (`.json`) of a pack cut into pieces (`pocket_web_wgpu::source`).
+    pub async fn read(self, url: String) -> Result<City, JsError> {
+        let source = Source::open(&url).await.map_err(|e| JsError::new(&e))?;
+        let city = app::City::read(self.gpu, self.format, self.samples, source).await.map_err(|e| JsError::new(&e))?;
+        Ok(City { city })
+    }
+}
+
 #[wasm_bindgen]
 impl Tokyo {
-    /// Reads the head of the pack at `url` and starts the flight on `canvas`, which has the shape's size in
-    /// pixels. One to a page. `url` names the pack's file, on a server that answers byte ranges, or the
-    /// manifest (`.json`) of a pack cut into pieces (`pocket_web_wgpu::source`).
-    ///
-    /// `worker` runs `page/sweep.js` and sweeps the shadows; without one, or when it fails, the frames do.
-    pub async fn start(canvas: web_sys::HtmlCanvasElement, url: String, shape: String, worker: Option<web_sys::Worker>) -> Result<Tokyo, JsError> {
+    /// The shell on `canvas`, which has the shape's size in pixels, with no city yet: its frames show the
+    /// interface alone. `prefs`: the settings the page kept from the last visit. One to a page.
+    pub async fn open(canvas: web_sys::HtmlCanvasElement, shape: String, prefs: String) -> Result<Tokyo, JsError> {
         std::panic::set_hook(Box::new(|info| web_sys::console::error_1(&info.to_string().into())));
         let shape = Shape::named(&shape).ok_or_else(|| JsError::new("no such shape"))?;
         let (gpu, surface) = Gpu::for_canvas(canvas).await.map_err(|e| JsError::new(&e))?;
         let screen = Screen::canvas(&gpu, surface, shape.width, shape.height, shape.samples);
+        let mut app = App::open(gpu, screen, shape);
+        if !prefs.is_empty() {
+            app.prefs_stored(&prefs);
+        }
+        Ok(Tokyo { app })
+    }
+
+    /// What reads the city for this shell.
+    pub fn reader(&self) -> Reader {
+        Reader { gpu: self.app.gpu.clone(), format: self.app.screen.format, samples: self.app.screen.samples }
+    }
+
+    /// The city has been read: the flight starts. `worker` runs `page/sweep.js` and sweeps the shadows;
+    /// without one, or when it fails, the frames do.
+    pub fn fly(&mut self, city: City, worker: Option<web_sys::Worker>) -> Result<(), JsError> {
         let sweeper = |tables: &'static Tables| -> Box<dyn Sweeper> {
             match worker {
                 Some(worker) => Box::new(SweepBeside::new(worker, tables)),
                 None => Box::new(SweepHere::new(tables)),
             }
         };
-        let source = Source::open(&url).await.map_err(|e| JsError::new(&e))?;
-        let app = App::start(gpu, screen, shape, source, sweeper).await.map_err(|e| JsError::new(&e))?;
-        Ok(Tokyo { app })
+        self.app.fly(city.city, sweeper).map_err(|e| JsError::new(&e))
     }
 
-    /// One frame at `now` (the frame loop's clock, milliseconds). `buttons`: `tokyo_sim::camera::btn` bits;
-    /// `keys`: `tokyo_sim::flight::key` bits and `tokyo_interface::pad::MENU`; the sticks in -1…1, ahead and
-    /// right positive.
-    #[allow(clippy::too_many_arguments)]
-    pub fn frame(&mut self, now: f64, buttons: u32, keys: u32, lx: f32, ly: f32, rx: f32, ry: f32) -> Result<(), JsError> {
-        self.app.frame(now, &Pad { buttons, keys, lx, ly, rx, ry }).map_err(|e| {
+    /// Whether the city flies: its head has been read and handed in.
+    pub fn flies(&self) -> bool {
+        self.app.flies()
+    }
+
+    /// The start failed: the interface says why.
+    pub fn fail(&mut self, why: &str) {
+        self.app.fail(why);
+    }
+
+    /// The first half of a frame at `now` (the frame loop's clock, milliseconds): what the interface asked
+    /// for, then the flight. `buttons`: PocketJS's bits of the buttons held on the page's handheld; the
+    /// sticks in -1…1, right and up positive. Returns the sixtieths of a second that passed.
+    pub fn step(&mut self, now: f64, buttons: u32, lx: f32, ly: f32, rx: f32, ry: f32) -> u32 {
+        self.app.step(now, &Held { buttons, left: [lx, ly], right: [rx, ry] })
+    }
+
+    /// The second half: the scene, with the interface's picture over it.
+    pub fn draw(&mut self) -> Result<(), JsError> {
+        self.app.draw().map_err(|e| {
             self.app.trouble = e.clone();
             JsError::new(&e)
         })
+    }
+
+    /// Reads beside the frames while none is drawn: the title card is playing.
+    pub fn pump(&mut self) {
+        self.app.pump();
+    }
+
+    /// A guest has opened the interface's channel; one that replaces another opens it again.
+    pub fn interface_opened(&mut self) {
+        self.app.interface_opened();
+    }
+
+    /// Whether the guest's next turn is worth taking. `buttons`: PocketJS's bits, as the guest would be
+    /// handed them; `touching`: a contact is on a surface it draws, or has just left one.
+    pub fn guest_due(&self, buttons: u32, touching: bool) -> bool {
+        self.app.guest_due(buttons, touching)
+    }
+
+    /// The line of state the guest has not seen, for its turn.
+    pub fn heard(&mut self) -> Option<String> {
+        self.app.heard()
+    }
+
+    /// A line the guest sent.
+    pub fn say(&mut self, line: &str) {
+        self.app.say(line);
+    }
+
+    /// The interface's picture as its rasterizer drew it over black and over white (`width` by `height`
+    /// RGBA rows): it is laid over every frame from the next on.
+    pub fn overlay(&mut self, over_black: &[u8], over_white: &[u8], width: u32, height: u32) -> Result<(), JsError> {
+        self.app.overlay.write_pair(&self.app.gpu, over_black, over_white, width, height).map_err(|e| JsError::new(&e))
+    }
+
+    /// Nothing is laid over the frames until a picture is handed in again: the guest is being replaced.
+    pub fn overlay_hide(&mut self) {
+        self.app.overlay.hide();
+    }
+
+    /// What the interface asked to have kept since the last call (its settings, as JSON text).
+    pub fn prefs_take(&mut self) -> Option<String> {
+        self.app.prefs_take()
     }
 
     /// Another screen from the next frame on. The canvas has the new size already. `name` is one of
@@ -80,24 +175,9 @@ impl Tokyo {
     }
 
     /// Words for the flow and for the flight, as a development host sends them: `tour=1 hour=18.5 rate=0
-    /// view=x,y,z,tx,ty,tz view=off near= mid= budget= option=`.
+    /// view=x,y,z,tx,ty,tz view=off near= mid= budget= option= mode=flight ui=menu`.
     pub fn control(&mut self, words: &str) {
         self.app.control(words);
-    }
-
-    /// A finger dragging the picture: pixels of a screen 480 wide since the last call.
-    pub fn look(&mut self, dx: f32, dy: f32) {
-        self.app.say(&format!("{{\"type\":\"look\",\"dx\":{dx},\"dy\":{dy}}}"));
-    }
-
-    /// `frames` frames one after the other without waiting for the display, each a sixtieth of a second of
-    /// the flight after the one before, from `now`: for a measurement, and for a picture of the canvas.
-    pub fn burst(&mut self, now: f64, frames: u32) -> Result<(), JsError> {
-        let pad = Pad { buttons: 0, keys: 0, lx: 0.0, ly: 0.0, rx: 0.0, ry: 0.0 };
-        for i in 0..frames {
-            self.app.frame(now + (i + 1) as f64 * 1000.0 / 60.0, &pad).map_err(|e| JsError::new(&e))?;
-        }
-        Ok(())
     }
 
     /// The run as a JSON object.
@@ -105,7 +185,7 @@ impl Tokyo {
         self.app.status()
     }
 
-    /// Whether every cell the eye is near has arrived.
+    /// Whether the city flies, and everything the eye is near has arrived.
     pub fn settled(&self) -> bool {
         self.app.settled()
     }
@@ -231,6 +311,8 @@ impl Sweeps {
             meta: Vec::new(),
             near_offset: 0,
             slot_bytes: 0,
+            pictures: Vec::new(),
+            texels_offset: 0,
         }));
         let refusal = unsafe { tokyo_core::tk_init(&tables.for_core(), 0) };
         if !refusal.is_null() {

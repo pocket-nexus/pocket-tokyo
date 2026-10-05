@@ -3,12 +3,14 @@
 //!
 //!   tokyo-shot --pack city.pack --out frame.png [--shape ipod] [--size 480x320] [--samples 4]
 //!              [--budget N] [--frames 240] [--status status.json] [--words "view=… hour=… near=… mid=…"]
-//!              [--against other.png]
+//!              [--against other.png] [--early]
 //!   tokyo-shot --compare a.png b.png
 //!
 //! `--pack` names the pack's file, or the manifest (`.json`) of a pack cut into
 //! pieces. The flight runs `--frames` frames of a sixtieth of a second and then on
-//! until every cell near the eye has been read; the last frame is the picture.
+//! until every cell near the eye and every block's picture has been read; the
+//! last frame is the picture. With `--early` it does not run on: the picture
+//! is the frame after `--frames`, with what has arrived by then.
 //! `--words` are the development host's (`tokyo_sim::flight::Flight::control`):
 //! `view=` holds the eye, `near=` and `mid=` hold the distances of the levels
 //! of detail, `rate=0` stops the clock.
@@ -35,8 +37,7 @@ mod native {
     use pocket_web_wgpu::gpu::{Gpu, Screen};
     use pocket_web_wgpu::source::Source;
     use pocket_web_wgpu::task;
-    use tokyo_core::Pad;
-    use tokyo_wgpu::app::{App, Shape, SweepHere};
+    use tokyo_wgpu::app::{App, City, Held, Shape, SweepHere};
 
     fn option(name: &str) -> Option<String> {
         let args: Vec<String> = std::env::args().collect();
@@ -99,16 +100,20 @@ mod native {
         let gpu = task::wait(Gpu::headless())?;
         let screen = Screen::texture(&gpu, shape.width, shape.height, shape.samples);
         let source = task::wait(Source::open(&pack))?;
-        let mut app = task::wait(App::start(gpu, screen, shape, source, |tables| Box::new(SweepHere::new(tables))))?;
+        let city = task::wait(City::read(gpu.clone(), screen.format, shape.samples, source))?;
+        let mut app = App::open(gpu, screen, shape);
+        app.fly(city, |tables| Box::new(SweepHere::new(tables)))?;
         if let Some(words) = option("--words") {
             app.control(&words);
         }
-        let pad = Pad { buttons: 0, keys: 0, lx: 0.0, ly: 0.0, rx: 0.0, ry: 0.0 };
+        let pad = Held::default();
         let step = 1000.0 / 60.0 * shape.pace() as f64;
         let mut count = 0;
-        // (a few frames after the last cell arrived: the frame that drew it has been chosen with it ready)
+        // (a few frames after the last cell and the last block's picture arrived: the frame that drew them has
+        // been chosen with them there)
         let mut quiet = 0;
-        while count < frames || quiet < 4 {
+        let early = std::env::args().any(|a| a == "--early");
+        while count < frames || (quiet < 4 && !early) {
             app.frame(count as f64 * step, &pad)?;
             count += 1;
             quiet = if app.settled() { quiet + 1 } else { 0 };

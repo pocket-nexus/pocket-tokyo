@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Pocket Tokyo</title>
 <link rel="icon" href="icon.png">
 <!-- The pack: its file, on a server that answers byte ranges, or the manifest of a pack cut into pieces. -->
@@ -10,21 +10,43 @@
 <style>
   /* The ground of the Pocket3D title card. */
   html, body { height: 100%; margin: 0; background: #171226; color: #cfc8e6; font: 13px/1.5 ui-sans-serif, system-ui, sans-serif; }
-  body { display: grid; grid-template-rows: 1fr auto; }
-  #room { min-height: 0; display: grid; place-items: center; overflow: hidden; }
-  /* A pixel of the city is a whole number of the display's. */
-  canvas { display: block; image-rendering: pixelated; touch-action: none; cursor: grab; }
-  canvas:active { cursor: grabbing; }
-  #say { position: fixed; inset: 0; display: grid; place-items: center; padding: 16px; text-align: center; pointer-events: none; }
-  footer { padding: 8px 16px 10px; display: flex; flex-wrap: wrap; gap: 4px 24px; justify-content: space-between; color: #8f87ab; }
+  body { display: grid; grid-template-rows: auto 1fr auto; overscroll-behavior: none; }
+  header, footer { padding: 8px 16px; display: flex; flex-wrap: wrap; gap: 4px 24px; justify-content: space-between; color: #8f87ab; }
+  header strong { color: #cfc8e6; font-weight: 600; }
+  /* The devices, as text: the one that is shown is underlined. */
+  #devices { display: flex; flex-wrap: wrap; gap: 4px 18px; }
+  #devices button { all: unset; cursor: pointer; color: #8f87ab; }
+  #devices button:hover { color: #cfc8e6; }
+  #devices button:focus-visible { outline: 1px solid #8f87ab; outline-offset: 3px; }
+  #devices button[aria-pressed="true"] { color: #f4f0ff; text-decoration: underline; text-underline-offset: 4px; cursor: default; }
   footer span { white-space: nowrap; }
+  #keys { white-space: normal; }
+
+  #stage { min-height: 0; display: flex; align-items: center; justify-content: center; gap: 16px; padding: 0 8px; overflow: hidden; }
+  #stage[data-stacked] { flex-wrap: wrap; align-content: center; gap: 12px 24px; }
+  #stage[data-stacked] [data-pocket-stage="screens"] { order: -1; flex-basis: 100%; }
+  [data-pocket-stage="screens"] { display: flex; flex-direction: column; align-items: center; }
+  canvas { display: block; touch-action: none; user-select: none; -webkit-user-select: none; }
+  canvas[hidden] { display: none; }
+  #say { position: fixed; inset: 0; display: grid; place-items: center; padding: 16px; text-align: center; pointer-events: none; }
+
+  /* A device's buttons, for a browser without keys: outlines and their names, no case around them. */
+  [data-pocket-stage="left"], [data-pocket-stage="right"] { display: grid; gap: 10px; justify-items: center; touch-action: none; user-select: none; -webkit-user-select: none; }
+  [data-pocket-stage]:empty { display: none; }
+  [data-pocket-group] { display: grid; gap: 2px; }
+  [data-pocket-group="top"] { gap: 8px; }
+  [data-pocket-button] { all: unset; box-sizing: border-box; min-width: 40px; height: 40px; padding: 0 8px; display: grid; place-items: center; border: 1px solid #5d5680; border-radius: 4px; color: #cfc8e6; font: 600 13px/1 ui-sans-serif, system-ui, sans-serif; touch-action: none; }
+  [data-pocket-button][data-held] { background: #cfc8e6; color: #171226; }
+  [data-pocket-stick] { width: 92px; height: 92px; display: grid; place-items: center; border: 1px solid #5d5680; border-radius: 50%; touch-action: none; }
+  [data-pocket-stick] > div { width: 40px; height: 40px; border-radius: 50%; background: #5d5680; pointer-events: none; }
 </style>
 </head>
 <body>
-<div id="room"><canvas id="city" hidden></canvas></div>
+<header><strong>Pocket Tokyo</strong><nav id="devices" aria-label="Device"></nav></header>
+<main id="stage"><canvas id="city" hidden></canvas></main>
 <div id="say" role="status"></div>
 <footer>
-  <span id="keys">W A S D fly · arrows or drag look · E Q climb, descend · Shift faster · [ ] clock · T tour</span>
+  <span id="keys"></span>
   <span id="sources">Buildings: PLATEAU, MLIT Japan · Streets: © OpenStreetMap contributors · Terrain: GSI Japan</span>
 </footer>
 <script type="module" src="main.js"></script>
