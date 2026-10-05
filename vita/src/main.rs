@@ -51,6 +51,7 @@ extern "C" {
     fn scePowerGetGpuClockFrequency() -> i32;
     fn sceDisplayGetVcount() -> i32;
     fn sceDisplayWaitVblankStart() -> i32;
+    fn sceKernelPowerTick(kind: i32) -> i32;
 }
 
 /// Bytes of the parameter buffer: where GXM keeps a scene's transformed vertices until its tiles are drawn. When
@@ -622,6 +623,11 @@ fn main() {
 
             // -------------------------------------------------------------- status
             clock_tick += 1;
+            // A tour nobody touches is still being watched: the console's own timers (dimming, the display
+            // off, standby) start again.
+            if clock_tick % 120 == 0 {
+                sceKernelPowerTick(0);
+            }
             if clock_tick % 60 == 0 {
                 // The system lowers the clocks after a suspend; set them again.
                 if scePowerGetArmClockFrequency() < CLOCKS[0] - 20 {
