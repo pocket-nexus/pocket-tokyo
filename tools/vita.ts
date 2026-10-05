@@ -1,17 +1,26 @@
 // Pocket Tokyo on PS Vita: build the native runtime, replace the running
 // development container's binary over PocketJS's wired debug transport
-// (vendor/pocketjs), sync the pack, steer and measure.
+// (vendor/pocketjs), sync the pack and the interface, steer and measure.
 //
 //   bun tools/tokyo.ts build  [--title P3B1D7273] [--debug]
-//   bun tools/tokyo.ts sync                       # pack → host0:tokyo/
+//   bun tools/tokyo.ts sync                       # pack and compiled interface → host0:tokyo/
 //   bun tools/tokyo.ts native                     # sync + build + USB SELF replacement
 //   bun tools/tokyo.ts serve                      # USB host (keep running)
 //   bun tools/tokyo.ts status | capture [--out f.png]
-//   bun tools/tokyo.ts ctl '{"auto":true}'        # host0:tokyo/control.json
-//   bun tools/tokyo.ts bench [--seconds 60]       # autopilot frame timings → device.json
-//   bun tools/tokyo.ts vpk                        # standalone PKTK00001 package: pack and programs inside
+//   bun tools/tokyo.ts ctl '{"mode":"flight"}'    # host0:tokyo/control.json
+//   bun tools/tokyo.ts bench [--seconds 60]       # frame timings over the tour → device.json
+//   bun tools/tokyo.ts vpk                        # standalone PKTK00001 package: pack, interface and programs inside
 //   bun tools/tokyo.ts push-vpk [file.vpk]        # → ux0:data/pocket-tokyo/ via the development build
 //   bun tools/tokyo.ts hold [--take|--release]    # keep the console for this repository across commands
+//
+// `ctl` keys: `"mode": "title" | "flight" | "menu"` sets the flow outright;
+// `"ui": "tour" | "fly" | "menu" | "resume" | "title"` asks what the interface
+// would ask; `"press": 8` (a mask of pad bits) or `"press": ["down", "circle"]`
+// presses buttons on the interface and `"tap": [x, y]` taps its panel (480 × 272);
+// `"interface": false` withholds its draw, for measuring what it costs; `tour`, `restart`, `hour`, `rate`, `stats`,
+// `traffic`, `view {pos, target, fov}`, `fly {pos, target}`, `near`, `mid`,
+// `budget`, `reach`, `profile`, `pace`, `post {…}` and `fetch` write the
+// flight and this device's settings.
 //
 // `--share DIR` uses an already-running USB host's root directory instead of
 // this repository's `.pocket-build/vita-usb/share`.
@@ -26,6 +35,7 @@ import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } fr
 import { resolve } from "node:path";
 import { packageVitaVpk } from "../vendor/pocketjs/tools/vita-package.ts";
 import { prepareVitaUsb } from "../vendor/pocketjs/tools/vita-usb.ts";
+import { compileInterface } from "./ui.ts";
 
 const ROOT = resolve(import.meta.dir, "..");
 const POCKETJS = resolve(ROOT, "vendor/pocketjs");
@@ -38,6 +48,8 @@ const BIN = "pocket-tokyo-vita";
 
 /** The Devkit installed on the development console: vitaTitleId("dev.pocket-stack.devkit"). Builds of PocketJS after the pocket-nexus rename install as P25BFE5E2. */
 const DEVKIT = "P3B1D7273";
+/** The compiled interface (`bun tools/ui.ts vita`), which the device reads beside the pack. */
+const INTERFACE = ["tokyo.js", "tokyo.pak"];
 /** The pack of an area and a profile. */
 export function packPath(argv: string[]): string {
   return resolve(ROOT, ".pocket-build/city", value(argv, "--area", "shiba"), value(argv, "--profile", "vita60"), "city.pack");
@@ -163,9 +175,10 @@ export async function dev(argv: string[], ...args: string[]): Promise<void> {
 
 /**
  * Copies the pack to the share unless the same bytes are already there, with `city.json` beside it: the device
- * compares that record with the one on its memory card and copies the pack across when they differ.
+ * compares that record with the one on its memory card and copies the pack across when they differ. Then
+ * compiles the interface and copies its bundle beside the pack, each file unless the same bytes are there.
  */
-export function sync(argv: string[]): void {
+export async function sync(argv: string[]): Promise<void> {
   const c = context(argv);
   const PACK = packPath(argv);
   // The device never creates directories on host0:; every directory it writes into exists up front.
@@ -179,11 +192,19 @@ export function sync(argv: string[]): void {
     writeFileSync(record, id);
     console.log(`tokyo: synced city.pack (${(receipt.pack.bytes / 1e6).toFixed(1)} MB) to ${c.appShare}`);
   }
+  const sha = (p: string) => createHash("sha256").update(readFileSync(p)).digest("hex");
+  const ui = await compileInterface("vita", value(argv, "--area", "shiba"));
+  for (const name of INTERFACE) {
+    const [src, dst] = [`${ui.directory}/${name}`, `${c.appShare}/${name}`];
+    if (existsSync(dst) && sha(dst) === sha(src)) continue;
+    cpSync(src, dst);
+    console.log(`tokyo: synced ${name} to ${c.appShare}`);
+  }
 }
 
 /**
- * The standalone package: the pack and the programs the device compiled go
- * inside the VPK, and the build carries no USB debug driver.
+ * The standalone package: the pack, the interface and the programs the device
+ * compiled go inside the VPK, and the build carries no USB debug driver.
  */
 export async function vpk(argv: string[]): Promise<void> {
   const c = context(argv);
@@ -202,7 +223,9 @@ export async function vpk(argv: string[]): Promise<void> {
     cpSync(gxp, `${stage}/gxp/${h}.gxp`);
   }
   cpSync(PACK, `${stage}/city.pack`);
-  console.log(`tokyo: staged ${hashes.length} programs and the pack in ${stage}`);
+  const ui = await compileInterface("vita", value(argv, "--area", "shiba"));
+  for (const name of INTERFACE) cpSync(`${ui.directory}/${name}`, `${stage}/${name}`);
+  console.log(`tokyo: staged ${hashes.length} programs, the pack and the interface in ${stage}`);
   await build([...argv.filter((a) => a !== "--standalone"), "--standalone"], stage);
 }
 

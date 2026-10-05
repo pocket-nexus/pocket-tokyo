@@ -1,18 +1,23 @@
 //! Pocket Tokyo on PS Vita.
 //!
 //! A frame at 960 × 544, sixty times a second: the sky, the tiles of the
-//! city at the level of detail their distance asks for, then the bright
-//! chain and the interface.
+//! city at the level of detail their distance asks for, the night's glow,
+//! then the interface. Every 2D pixel is the interface's: the PocketJS guest
+//! of `ui/` (`interface.rs`). What moves is `tokyo_sim::flight::Flight`, and
+//! the flow around it (the title, the flight, the menu) is
+//! `tokyo_interface::Session`, as on every other device.
 //!
 //! Development loop over PocketJS's wired debug transport: the pack is
 //! copied once from the USB share (`host0:tokyo/city.pack`) to the memory
-//! card and read from there, `host0:tokyo/control.json` steers the run, and
-//! status receipts carry frame timings under `engine`.
+//! card and read from there, the interface's bundle is read from the share
+//! (`host0:tokyo/tokyo.js`, `tokyo.pak`), `host0:tokyo/control.json` steers
+//! the run, and status receipts carry frame timings under `engine`.
 
 mod cars;
 mod city;
 mod gpu;
 mod hostfs;
+mod interface;
 mod paths;
 mod post;
 mod shadow;
@@ -28,7 +33,9 @@ use pocket_vita_gxm::target::{Fence, Msaa};
 use pocketjs_vita::{dev, dev_protocol::Op, devmenu::Action, graphics, input};
 use post::{Look, Post};
 use serde_json::{json, Value};
-use tokyo_sim::camera::{btn, Camera, Input};
+use tokyo_interface::{channel, pad, Command, Mode, Pad, Session};
+use tokyo_sim::camera::Camera;
+use tokyo_sim::flight::Flight;
 use tokyo_sim::mat;
 use tokyo_sim::math::*;
 use tokyo_sim::sky;
@@ -74,8 +81,17 @@ pub unsafe extern "C" fn __wrap_sceGxmInitialize(params: *const g::SceGxmInitial
     __real_sceGxmInitialize(&p)
 }
 
+/// Seconds a frame may wait for the GPU to finish the frame before last, before the governor takes the
+/// levels of detail in. The GPU can run most of a refresh behind this thread and still show every frame
+/// on time; at a third of a refresh there are a dozen frames left to act in.
+const BEHIND: f32 = 0.006;
+
 /// Samples per pixel of the scene target.
 const DEFAULT_MSAA: u64 = 4;
+
+/// vita2d's pool of temporary vertices, which the interface and the Devkit
+/// menu draw from. A frame takes half of it, in turn (see the display scene).
+const POOL_BYTES: u32 = 2 * 1024 * 1024;
 
 /// The day of the year the sun follows (5 October).
 const DAY: f32 = 277.0;
@@ -99,31 +115,98 @@ const P_DOWN: u32 = 0x40;
 const P_LEFT: u32 = 0x80;
 const P_L: u32 = 0x100 | 0x400;
 const P_R: u32 = 0x200 | 0x800;
+const P_TRIANGLE: u32 = 0x1000;
+const P_CIRCLE: u32 = 0x2000;
 const P_CROSS: u32 = 0x4000;
+const P_SQUARE: u32 = 0x8000;
 
 unsafe fn text(font: *mut g::vita2d_pgf, x: i32, y: i32, color: u32, scale: f32, s: &str) {
     let c = std::ffi::CString::new(s.replace('\0', " ")).unwrap();
     g::vita2d_pgf_draw_text(font, x, y, color, scale, c.as_ptr());
 }
 
-/// A frame of the loading screen; it also publishes status, so the computer sees the new process come up.
-unsafe fn loading(font: *mut g::vita2d_pgf, dev: &mut dev::Host, frame: &mut u32, lines: &[String]) {
-    graphics::begin_frame(0xff1c_140e);
-    text(font, 48, 80, 0xffff_ffff, 1.4, "Pocket Tokyo");
-    for (i, l) in lines.iter().enumerate() {
-        text(font, 48, 130 + i as i32 * 28, 0xffd0_d0d0, 1.0, l);
+/// What a frame needs before there is a city to draw: the interface, the
+/// wired-debug host and a count of frames shown.
+struct Shell {
+    ui: interface::Ui,
+    dev: dev::Host,
+    /// The system font, loaded when a frame has no interface to draw.
+    font: *mut g::vita2d_pgf,
+    frame: u32,
+}
+
+impl Shell {
+    /// A frame of the interface alone, while the pack is copied and read (`Mode::Loading`,
+    /// `message` the step) or after the start failed (`Mode::Error`, `message` the reason): the
+    /// guest turns, then draws. It also publishes status, so the computer sees the new process
+    /// come up.
+    unsafe fn frame(&mut self, mode: Mode, message: &str) {
+        let state = &mut channel().state;
+        state.mode = mode;
+        if state.message != message {
+            state.message.clear();
+            state.message.push_str(message);
+        }
+        self.ui.turn(interface::TURN, &interface::NEUTRAL, true, None);
+        if !self.ui.live() && self.font.is_null() {
+            self.font = g::vita2d_load_default_pgf();
+        }
+        graphics::begin_frame(0xff11_0c09);
+        if self.ui.live() {
+            self.ui.draw();
+        } else {
+            // No interface: the system font says what is going on.
+            text(self.font, 48, 80, 0xffff_ffff, 1.4, "Pocket Tokyo");
+            let chars: Vec<char> = message.chars().collect();
+            for (i, line) in chars.chunks(90).take(4).enumerate() {
+                text(self.font, 48, 130 + i as i32 * 28, 0xffd0_d0d0, 1.0, &line.iter().collect::<String>());
+            }
+        }
+        self.dev.overlay();
+        graphics::present();
+        self.dev.engine = json!({"stage": if mode == Mode::Error { "error" } else { "loading" }, "message": message, "interface": {"up": self.ui.live(), "open": channel().is_open(), "error": self.ui.error}});
+        self.dev.publish(self.frame, "tokyo");
+        serve(&mut self.dev, self.frame, Action::None);
+        self.frame += 1;
     }
-    dev.overlay();
-    graphics::present();
-    dev.engine = json!({"stage": "loading", "lines": lines});
-    dev.publish(*frame, "tokyo");
-    serve(dev, *frame, Action::None);
-    *frame += 1;
+
+    /// The start failed: the reason stays on the screen and in the status receipt.
+    unsafe fn fail(&mut self, error: String) -> ! {
+        pocketjs_vita::vita_log(format_args!("tokyo: {error}"));
+        loop {
+            self.frame(Mode::Error, &error);
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+}
+
+/// Copies `from` to `to` through a temporary file, a megabyte at a time, with a frame of the
+/// loading screen after each: `said(megabytes done, megabytes a second)` is its line.
+unsafe fn copy(from: &str, to: &str, shell: &mut Shell, said: impl Fn(f32, f32) -> String) -> Result<usize, String> {
+    let mut src = std::fs::File::open(from).map_err(|e| format!("{from}: {e}"))?;
+    let temp = format!("{to}.part");
+    let mut dst = std::fs::File::create(&temp).map_err(|e| format!("{temp}: {e}"))?;
+    let mut chunk = vec![0u8; 1024 * 1024];
+    let (mut done, t) = (0usize, Instant::now());
+    loop {
+        let n = src.read(&mut chunk).map_err(|e| format!("{from}: {e}"))?;
+        if n == 0 {
+            break;
+        }
+        dst.write_all(&chunk[..n]).map_err(|e| format!("{temp}: {e}"))?;
+        done += n;
+        let mb = done as f32 / 1e6;
+        shell.frame(Mode::Loading, &said(mb, mb / t.elapsed().as_secs_f32().max(0.001)));
+    }
+    drop(dst);
+    let _ = std::fs::remove_file(to);
+    std::fs::rename(&temp, to).map_err(|e| format!("{to}: {e}"))?;
+    Ok(done)
 }
 
 /// Brings the pack on the computer to the memory card when it is not the one already there, and says which
 /// pack to read.
-unsafe fn sync_pack(live: bool, font: *mut g::vita2d_pgf, dev: &mut dev::Host, frame: &mut u32) -> Result<&'static str, String> {
+unsafe fn sync_pack(live: bool, shell: &mut Shell) -> Result<&'static str, String> {
     if live {
         let _ = std::fs::create_dir_all(paths::DATA);
         let host = hostfs::read(paths::PACK_HOST_ID, 4096);
@@ -131,24 +214,7 @@ unsafe fn sync_pack(live: bool, font: *mut g::vita2d_pgf, dev: &mut dev::Host, f
         if let Some(id) = host {
             if Some(&id) != card.as_ref() {
                 let total = serde_json::from_slice::<Value>(&id).ok().and_then(|v| v["bytes"].as_u64()).unwrap_or(0) as f32 / 1e6;
-                let mut src = std::fs::File::open(paths::PACK_HOST).map_err(|e| format!("{}: {e}", paths::PACK_HOST))?;
-                let temp = format!("{}.part", paths::PACK_CARD);
-                let mut dst = std::fs::File::create(&temp).map_err(|e| format!("{temp}: {e}"))?;
-                let mut chunk = vec![0u8; 1024 * 1024];
-                let (mut done, t) = (0usize, Instant::now());
-                loop {
-                    let n = src.read(&mut chunk).map_err(|e| format!("{}: {e}", paths::PACK_HOST))?;
-                    if n == 0 {
-                        break;
-                    }
-                    dst.write_all(&chunk[..n]).map_err(|e| format!("{temp}: {e}"))?;
-                    done += n;
-                    let secs = t.elapsed().as_secs_f32().max(0.001);
-                    loading(font, dev, frame, &["Copying the city to the memory card".into(), format!("{:.0} of {:.0} MB at {:.1} MB/s", done as f32 / 1e6, total, done as f32 / 1e6 / secs)]);
-                }
-                drop(dst);
-                let _ = std::fs::remove_file(paths::PACK_CARD);
-                std::fs::rename(&temp, paths::PACK_CARD).map_err(|e| format!("{}: {e}", paths::PACK_CARD))?;
+                copy(paths::PACK_HOST, paths::PACK_CARD, shell, |mb, rate| format!("Copying the city to the memory card: {mb:.0} of {total:.0} MB at {rate:.1} MB/s"))?;
                 std::fs::write(paths::PACK_CARD_ID, &id).map_err(|e| format!("{}: {e}", paths::PACK_CARD_ID))?;
             }
         }
@@ -161,34 +227,17 @@ unsafe fn sync_pack(live: bool, font: *mut g::vita2d_pgf, dev: &mut dev::Host, f
 
 /// Copies a file the computer has put in the share's `outbox` to this app's folder on the memory card (a
 /// package, for VitaShell to install), and leaves `<name>.done` beside the original: what was copied, or why not.
-unsafe fn fetch(name: &str, font: *mut g::vita2d_pgf, dev: &mut dev::Host, frame: &mut u32) {
+unsafe fn fetch(name: &str, shell: &mut Shell) {
     let (from, to) = (format!("{}/outbox/{name}", paths::HOST), format!("{}/{name}", paths::DATA));
-    let mut copy = || -> Result<usize, String> {
-        let _ = std::fs::create_dir_all(paths::DATA);
-        let mut src = std::fs::File::open(&from).map_err(|e| format!("{from}: {e}"))?;
-        let temp = format!("{to}.part");
-        let mut dst = std::fs::File::create(&temp).map_err(|e| format!("{temp}: {e}"))?;
-        let mut chunk = vec![0u8; 1024 * 1024];
-        let (mut done, t) = (0usize, Instant::now());
-        loop {
-            let n = src.read(&mut chunk).map_err(|e| format!("{from}: {e}"))?;
-            if n == 0 {
-                break;
-            }
-            dst.write_all(&chunk[..n]).map_err(|e| format!("{temp}: {e}"))?;
-            done += n;
-            loading(font, dev, frame, &[format!("Copying {name} to the memory card"), format!("{:.0} MB at {:.1} MB/s", done as f32 / 1e6, done as f32 / 1e6 / t.elapsed().as_secs_f32().max(0.001))]);
-        }
-        drop(dst);
-        let _ = std::fs::remove_file(&to);
-        std::fs::rename(&temp, &to).map_err(|e| format!("{to}: {e}"))?;
-        Ok(done)
-    };
-    let said = match copy() {
+    let _ = std::fs::create_dir_all(paths::DATA);
+    let said = match copy(&from, &to, shell, |mb, rate| format!("Copying {name} to the memory card: {mb:.0} MB at {rate:.1} MB/s")) {
         Ok(bytes) => format!("{bytes} bytes at {to}"),
         Err(e) => format!("failed: {e}"),
     };
     let _ = hostfs::write(&format!("{from}.done"), said.as_bytes());
+    // The last of those frames drew from the start of vita2d's pool: it leaves the GPU before the next
+    // frame of the city writes there.
+    g::vita2d_wait_rendering_done();
 }
 
 /// Remote control: `host0:tokyo/control.json`, polled off the render thread.
@@ -215,40 +264,67 @@ fn control_watcher() -> mpsc::Receiver<Value> {
     rx
 }
 
+/// What this device sets beside the flight (`Flight` has the eye, the tour, the clock and the
+/// switches every device shares).
 struct Settings {
-    stats: bool,
     /// Wait for the GPU after each frame and time it.
     profile: bool,
     show: Show,
     /// Display refreshes per frame: 1 is sixty frames a second.
     pace: i32,
     look: Look,
-    /// A fixed camera: eye, target, vertical field of view.
-    view: Option<(V3, V3, f32)>,
-    /// Tokyo's clock, and how many hours pass in a second.
-    hour: f32,
-    rate: f32,
     haze: f32,
     /// Strength of the lamp light on the ground.
     lamps: f32,
-    /// The camera follows the tour.
-    tour: bool,
-    traffic: bool,
     /// Triangles a frame may draw: the distances of the levels of detail follow it.
     budget: u32,
     govern: bool,
     /// The near and the mid distance when the budget allows them in full.
     reach: (f32, f32),
+    /// Draw the interface (off for a measurement of what it costs).
+    interface: bool,
 }
 
-fn apply_control(v: &Value, s: &mut Settings, cam: &mut Camera, tour_at: &mut f32) {
+/// A control message's `press`: a mask of PocketJS button bits (the pad's own), or names.
+fn press(ui: &mut interface::Ui, v: &Value) {
+    if let Some(mask) = v.as_u64() {
+        ui.press(mask as u32);
+    }
+    for name in v.as_array().into_iter().flatten().filter_map(Value::as_str) {
+        ui.press(match name {
+            "up" => P_UP,
+            "right" => P_RIGHT,
+            "down" => P_DOWN,
+            "left" => P_LEFT,
+            "l" => 0x100,
+            "r" => 0x200,
+            "triangle" => P_TRIANGLE,
+            "circle" => P_CIRCLE,
+            "cross" => P_CROSS,
+            "square" => P_SQUARE,
+            "start" => P_START,
+            "select" => P_SELECT,
+            _ => continue,
+        });
+    }
+}
+
+/// A message from the computer: `{"mode": "title" | "flight" | "menu"}` sets the flow outright,
+/// `{"ui": "tour" | "fly" | "menu" | "resume" | "title"}` asks what the interface would ask,
+/// `{"press": 8}` or `{"press": ["down", "circle"]}` presses buttons on the interface and
+/// `{"tap": [x, y]}` taps its panel (480 × 272); the rest writes the flight's fields and this
+/// device's settings.
+fn apply_control(v: &Value, s: &mut Settings, flight: &mut Flight, session: &mut Session, ui: &mut interface::Ui) {
     if v["restart"] == Value::Bool(true) {
-        *tour_at = 0.0;
+        flight.tour_at = 0.0;
     }
     let flag = |k: &str, cur: bool| v[k].as_bool().unwrap_or(cur);
     let num = |k: &str, cur: f32| v[k].as_f64().map(|x| x as f32).unwrap_or(cur);
-    s.stats = flag("stats", s.stats);
+    // `at`: seconds into the tour.
+    flight.tour_at = num("at", flight.tour_at);
+    flight.stats = flag("stats", flight.stats);
     s.profile = flag("profile", s.profile);
+    s.interface = flag("interface", s.interface);
     s.show.top = flag("top", s.show.top);
     s.show.wall = flag("wall", s.show.wall);
     s.show.solid = flag("solid", s.show.solid);
@@ -269,10 +345,35 @@ fn apply_control(v: &Value, s: &mut Settings, cam: &mut Camera, tour_at: &mut f3
     if let (Some(a), Some(b)) = (v["reach"][0].as_f64(), v["reach"][1].as_f64()) {
         s.reach = (a as f32, b as f32);
     }
-    s.tour = flag("tour", s.tour);
-    s.traffic = flag("traffic", s.traffic);
-    s.hour = num("hour", s.hour);
-    s.rate = num("rate", s.rate);
+    // The flow first: a flight's own switches below are then written into the mode they belong to.
+    let asked = match (v["ui"].as_str(), session.mode) {
+        (Some("tour"), Mode::Title) => Some(Command::Start { tour: true }),
+        (Some("fly"), Mode::Title) => Some(Command::Start { tour: false }),
+        (Some("tour"), _) => Some(Command::Tour(true)),
+        (Some("fly"), _) => Some(Command::Tour(false)),
+        (Some("menu"), _) => Some(Command::Menu(true)),
+        (Some("resume"), _) => Some(Command::Menu(false)),
+        (Some("title"), _) => Some(Command::Title),
+        _ => None,
+    };
+    if let Some(command) = asked {
+        session.command(flight, command);
+    }
+    if let Some(mode) = v["mode"].as_str().and_then(Mode::parse).filter(|m| !matches!(m, Mode::Loading | Mode::Error)) {
+        session.mode = mode;
+    }
+    if v["gc"] == Value::Bool(true) {
+        // Safety: the render thread, between two turns.
+        unsafe { ui.collect() };
+    }
+    press(ui, &v["press"]);
+    if let (Some(x), Some(y)) = (v["tap"][0].as_u64(), v["tap"][1].as_u64()) {
+        ui.tap(x as u16, y as u16);
+    }
+    flight.tour_on = flag("tour", flight.tour_on);
+    flight.traffic = flag("traffic", flight.traffic);
+    flight.hour = num("hour", flight.hour);
+    flight.rate = num("rate", flight.rate);
     s.haze = num("haze", s.haze);
     s.lamps = num("lamps", s.lamps);
     if let Some(x) = v["pace"].as_i64() {
@@ -290,24 +391,27 @@ fn apply_control(v: &Value, s: &mut Settings, cam: &mut Camera, tour_at: &mut f3
     }
     let f = |a: &Value, i: usize| a.get(i).and_then(Value::as_f64).unwrap_or(0.0) as f32;
     if v.get("view").is_some() {
-        s.view = match (&v["view"]["pos"], &v["view"]["target"]) {
+        flight.view = match (&v["view"]["pos"], &v["view"]["target"]) {
             (p, t) if p.is_array() && t.is_array() => Some((v3(f(p, 0), f(p, 1), f(p, 2)), v3(f(t, 0), f(t, 1), f(t, 2)), v["view"]["fov"].as_f64().unwrap_or(55.0) as f32)),
             _ => None,
         };
     }
     // `fly`: put the free camera somewhere and leave it to the pad.
-    if let (p, t) = (&v["fly"]["pos"], &v["fly"]["target"]) {
-        if p.is_array() && t.is_array() {
-            *cam = Camera::looking(v3(f(p, 0), f(p, 1), f(p, 2)), v3(f(t, 0), f(t, 1), f(t, 2)));
-            s.view = None;
-        }
+    let (p, t) = (&v["fly"]["pos"], &v["fly"]["target"]);
+    if p.is_array() && t.is_array() {
+        flight.cam = Camera::looking(v3(f(p, 0), f(p, 1), f(p, 2)), v3(f(t, 0), f(t, 1), f(t, 2)));
+        flight.view = None;
+        flight.tour_on = false;
     }
 }
 
-fn pad_input(pad: &input::Pad, buttons: u32) -> Input {
+/// The pad as the flow reads it: both sticks, ✕ to fly faster, R and L to climb and descend, SELECT
+/// for the tour, left and right on the d-pad for the clock, and START for when no interface is on
+/// the screen.
+fn session_pad(p: &input::Pad) -> Pad {
     let mut b = 0;
-    for (bit, to) in [(P_CROSS, btn::FAST), (P_R, btn::UP), (P_L, btn::DOWN)] {
-        if buttons & bit != 0 {
+    for (bit, to) in [(P_CROSS, pad::FAST), (P_R, pad::UP), (P_L, pad::DOWN), (P_SELECT, pad::TOUR), (P_LEFT, pad::EARLIER), (P_RIGHT, pad::LATER), (P_START, pad::MENU)] {
+        if p.buttons & bit != 0 {
             b |= to;
         }
     }
@@ -321,7 +425,7 @@ fn pad_input(pad: &input::Pad, buttons: u32) -> Input {
             (x - DEAD * if x < 0.0 { -1.0 } else { 1.0 }) / (1.0 - DEAD)
         }
     };
-    Input { buttons: b, lx: axis(pad.lx), ly: -axis(pad.ly), rx: axis(pad.rx), ry: -axis(pad.ry) }
+    Pad { buttons: b, lx: axis(p.lx), ly: -axis(p.ly), rx: axis(p.rx), ry: -axis(p.ry) }
 }
 
 /// Rolling frame statistics over the last `N` frames.
@@ -352,7 +456,8 @@ impl Timing {
 
 fn main() {
     unsafe {
-        // Development builds take boot switches from the USB share: {"msaa": 0 | 2 | 4, "title": false, "ground": 512}.
+        // Development builds take boot switches from the USB share:
+        // {"msaa": 0 | 2 | 4, "title": false, "ground": 512, "mode": "flight", "tour": false, "pace": 1}.
         let live = cfg!(feature = "usb-debug");
         let boot: Value = if live { hostfs::read(&format!("{}/boot.json", paths::HOST), 4096).and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or(Value::Null) } else { Value::Null };
         let samples = boot["msaa"].as_u64().unwrap_or(DEFAULT_MSAA);
@@ -373,54 +478,52 @@ fn main() {
             Msaa::X2 => g::SceGxmMultisampleMode_SCE_GXM_MULTISAMPLE_2X,
             _ => g::SceGxmMultisampleMode_SCE_GXM_MULTISAMPLE_NONE,
         };
-        if g::vita2d_init_advanced_with_msaa(1024 * 1024, display_msaa) < 0 {
+        if g::vita2d_init_advanced_with_msaa(POOL_BYTES, display_msaa) < 0 {
             pocketjs_vita::vita_log(format_args!("tokyo: vita2d did not start"));
             return;
         }
-        if let Err(error) = graphics::init_with_pool(1024 * 1024) {
+        if let Err(error) = graphics::init_with_pool(POOL_BYTES) {
             pocketjs_vita::vita_log(format_args!("tokyo: graphics {error}"));
             return;
         }
         set_clocks();
         input::init();
-        let mut dev = dev::Host::new();
-        let font = g::vita2d_load_default_pgf();
-        let mut frame_no = 0u32;
-        let fail = |font, dev: &mut dev::Host, frame_no: &mut u32, e: String| -> ! {
-            pocketjs_vita::vita_log(format_args!("tokyo: {e}"));
-            loop {
-                loading(font, dev, frame_no, &["Could not start.".into(), e.chars().take(90).collect(), e.chars().skip(90).take(90).collect()]);
-                std::thread::sleep(Duration::from_millis(100));
-            }
-        };
+        // The interface comes up first: it shows the load, and a failure.
+        let mut shell = Shell { ui: interface::Ui::boot(), dev: dev::Host::new(), font: core::ptr::null_mut(), frame: 0 };
+        channel().state.prefs = std::fs::read_to_string(format!("{}/{}", paths::DATA, paths::INTERFACE_FILE)).unwrap_or_default();
 
         // ------------------------------------------------------------------ load
         let t_load = Instant::now();
-        loading(font, &mut dev, &mut frame_no, &["Looking for the city".into()]);
-        let pack_path = match sync_pack(live, font, &mut dev, &mut frame_no) {
+        shell.frame(Mode::Loading, "Looking for the city");
+        let pack_path = match sync_pack(live, &mut shell) {
             Ok(p) => p,
-            Err(e) => fail(font, &mut dev, &mut frame_no, e),
+            Err(e) => shell.fail(e),
         };
         let copy_ms = t_load.elapsed().as_millis() as u64;
         let loaded = (|| -> Result<_, String> {
             let mut p = PackFile::open(pack_path)?;
             let meta: Value = serde_json::from_slice(&p.read(tokyo_pack::META)?).map_err(|e| e.to_string())?;
             let mut gpu = Gpu::new(live)?;
-            let mut vram = Arena::new(Kind::Cdram, 16 * 1024 * 1024);
+            // Video memory in blocks of 4 MiB, so that the last block leaves at most that much unused. The
+            // interface's glyph pages and map take 15 MB of the same memory (vita2d keeps its textures there,
+            // 32 bits a texel at two samples a pixel), which leaves the city 58 MB: 40 MB with ground pictures
+            // of 512 texels, 65 MB with 1024, which no longer fit. What the GPU samples stays in video memory:
+            // with the shadow targets in GPU-mapped main memory a night tour had 26 late frames in 30 s.
+            let mut vram = Arena::new(Kind::Cdram, 4 * 1024 * 1024);
             let mut targets = Arena::new(Kind::Main, 4 * 1024 * 1024);
             let post = Post::new(&mut gpu, &mut vram, &mut targets, msaa)?;
             let ground_top = boot["ground"].as_u64().unwrap_or(512) as u32;
-            let city = CityGpu::load(&mut p, &mut gpu, &mut vram, msaa.gxm(), ground_top, |line| loading(font, &mut dev, &mut frame_no, &[line.to_string()]))?;
+            let city = CityGpu::load(&mut p, &mut gpu, &mut vram, msaa.gxm(), ground_top, |line| shell.frame(Mode::Loading, line))?;
             let cars = cars::Cars::new(&mut gpu, &city::scene_defines(&city.city), msaa.gxm())?;
             gpu.finish();
-            loading(font, &mut dev, &mut frame_no, &["Casting the first shadows".into()]);
+            shell.frame(Mode::Loading, "Casting the first shadows");
             let c = city.city;
             let shadows = shadow::Shadows::new(&mut vram, city.heights.clone(), c.grid_w as usize, c.grid_h as usize, c.grid_step, c.height_step, sky::light(c.hour, DAY).dir)?;
             Ok((meta, gpu, city, vram, post, targets, shadows, cars))
         })();
         let (meta, gpu, mut city, vram, mut post, _targets, mut shadows, mut cars) = match loaded {
             Ok(x) => x,
-            Err(e) => fail(font, &mut dev, &mut frame_no, e),
+            Err(e) => shell.fail(e),
         };
         let load_ms = t_load.elapsed().as_millis() as u64;
         // Which pack this is: the record that came with it.
@@ -430,109 +533,124 @@ fn main() {
         let mut traffic = tokyo_sim::traffic::Traffic::new(lanes.0, lanes.1, 800, 0x70_6b79);
         let mut ring = match pocket_vita_gxm::mem::Ring::new(cars::Cars::frame_bytes() + 4096, 2) {
             Ok(r) => r,
-            Err(e) => fail(font, &mut dev, &mut frame_no, e),
+            Err(e) => shell.fail(e),
         };
         let mut fence = Fence::new(0, 2);
         let mut scene_fence = Fence::new(2, 2);
         let control = if live { control_watcher() } else { mpsc::channel().1 };
         let mut set = Settings {
-            stats: live,
             profile: false,
             show: Show { top: true, wall: true, solid: true, near: 300.0, mid: 1300.0, sectors: true, chop: 1 },
             pace: boot["pace"].as_i64().unwrap_or(1) as i32,
             look: Look::DEFAULT,
-            view: None,
-            hour: city.city.hour,
-            rate: 0.03,
             haze: 0.00022,
             lamps: 1.0,
-            tour: boot["tour"].as_bool().unwrap_or(true),
-            traffic: true,
             budget: 200_000,
             govern: true,
             reach: (300.0, 1300.0),
+            interface: true,
         };
-        let tour = tokyo_sim::tour::Tour::new(city.tour.clone(), 60.0);
-        let mut tour_at = 0.0f32;
+        // The eye, the tour and the clock, as on every device. The distances of the levels of detail stay with
+        // this device's own governor below, which counts what the city's three passes drew.
+        let mut flight = Flight::new(city.city.view, city.city.hour, city.tour.clone(), set.budget, set.reach, 1);
+        flight.governor.on = false;
+        // The flow: the title over the tour, the flight, the menu. This device draws traffic, so the interface
+        // may turn it off.
+        let mut session = Session::new();
+        session.traffic = true;
+        if let Some(mode) = boot["mode"].as_str().and_then(Mode::parse).filter(|m| !matches!(m, Mode::Loading | Mode::Error)) {
+            session.mode = mode;
+        }
+        flight.tour_on = boot["tour"].as_bool().unwrap_or(true);
+        channel().state.message.clear();
         let mut scale = 1.0f32;
-        let home = city.city.view;
-        let mut cam = Camera::looking(v3(home[0], home[1], home[2]), v3(home[3], home[4], home[5]));
+        // Frames the distances stay in after the GPU fell behind.
+        let mut hold = 0u32;
+        // A list was up at the last frame (the title is one).
+        let mut listed = true;
 
         let ctx = g::vita2d_get_context();
         let mut timing = Timing { ms: [16.7; Timing::N], at: 0, late: 0, frames: 0 };
         let mut last = Instant::now();
         let mut last_vcount = sceDisplayGetVcount();
-        let mut prev_buttons = u32::MAX;
-        let (mut draw_ms, mut gpu_ms, mut scene_ms) = (0.0f32, 0.0f32, 0.0f32);
+        let (mut draw_ms, mut gpu_ms, mut scene_ms, mut ui_ms, mut ui_draw_ms) = (0.0f32, 0.0f32, 0.0f32, 0.0f32, 0.0f32);
         let mut stats = city::Stats::default();
         let mut clock_tick = 0u32;
         let mut seconds = 0.0f32;
+        let mut frame_no = shell.frame;
+        // Late frames by what held them: this thread's own work (the flight, the interface's turn, the draws)
+        // took most of a refresh, or the GPU had not finished an earlier frame.
+        let (mut late_cpu, mut late_gpu) = (0u32, 0u32);
+        // The last loading frame drew from the start of vita2d's pool: it leaves the GPU before the first frame
+        // of the loop writes there.
+        g::vita2d_wait_rendering_done();
+        // What mounting the screens left behind is collected before the first frame. After that the guest is
+        // collected when the title comes back, and at every 256th list besides: its collector takes 35 ms and
+        // does not start by itself (`interface.rs`).
+        shell.ui.collect();
+        let mut lists = 0u32;
+        let mut mode_was = session.mode;
 
         loop {
-            // -------------------------------------------------------------- input
-            let pad = input::read();
-            let (buttons, action) = dev.menu.input(pad.buttons);
-            let pressed = buttons & !prev_buttons;
-            prev_buttons = buttons;
+            // -------------------------------------------------------------- input and the flight
+            let t_frame = Instant::now();
+            let raw = input::read();
+            let (buttons, action) = shell.dev.menu.input(raw.buttons);
+            // While the Devkit menu is up the pad is its own.
+            let menu = shell.dev.menu.visible;
+            let pad = if menu { interface::NEUTRAL } else { input::Pad { buttons, ..raw } };
             while let Ok(v) = control.try_recv() {
                 if let Some(name) = v["fetch"].as_str().filter(|n| !n.contains('/') && !n.contains("..")) {
-                    fetch(name, font, &mut dev, &mut frame_no);
+                    shell.frame = frame_no;
+                    fetch(name, &mut shell);
+                    frame_no = shell.frame;
                 }
-                apply_control(&v, &mut set, &mut cam, &mut tour_at);
+                apply_control(&v, &mut set, &mut flight, &mut session, &mut shell.ui);
+            }
+            // What the interface asked for on its last turn; what it wants kept goes to the card.
+            if let Some(text) = session.obey(&mut flight, |_, _| {}) {
+                paths::write_text(paths::INTERFACE_FILE, &text);
+                channel().state.prefs = text;
+            }
+            if session.mode != mode_was {
+                if session.mode != Mode::Flight {
+                    lists += 1;
+                }
+                if session.mode == Mode::Title || (session.mode == Mode::Menu && lists % 256 == 0) {
+                    shell.ui.collect();
+                }
+                mode_was = session.mode;
             }
             let vcount = sceDisplayGetVcount();
             let vblanks = (vcount.wrapping_sub(last_vcount)).clamp(1, 4);
             last_vcount = vcount;
             let dt = vblanks as f32 / 60.0;
             seconds += dt;
-            if pressed & P_SELECT != 0 && frame_no > 30 {
-                set.stats = !set.stats;
-            }
-            if pressed & P_START != 0 && !tour.is_empty() {
-                set.tour = !set.tour;
-                set.view = None;
-            }
-            let _ = home;
-            // The clock: left and right turn it by hand, up and down set how fast it runs by itself.
-            if buttons & P_RIGHT != 0 {
-                set.hour += 2.5 * dt;
-            }
-            if buttons & P_LEFT != 0 {
-                set.hour -= 2.5 * dt;
-            }
-            if pressed & P_UP != 0 {
-                set.rate = min(set.rate + 0.25, 4.0);
-            }
-            if pressed & P_DOWN != 0 {
-                set.rate = max(set.rate - 0.25, 0.0);
-            }
-            set.hour = (set.hour + set.rate * dt).rem_euclid(24.0);
-            let inp = if dev.menu.visible { Input::default() } else { pad_input(&pad, buttons) };
-            // The sticks take the camera off the tour, where it is.
-            if set.tour && (abs(inp.lx) + abs(inp.ly) + abs(inp.rx) + abs(inp.ry) > 0.2 || inp.buttons != 0) && frame_no > 30 {
-                set.tour = false;
-            }
-            if set.tour && !tour.is_empty() {
-                tour_at += dt;
-                let (mut eye, target) = tour.at(tour_at);
-                eye.y = max(eye.y, city.height(eye.x, eye.z) + 14.0);
-                cam = Camera::looking(eye, target);
-            } else {
-                cam.fly(&inp, dt, |x, z| city.height(x, z));
-            }
-
-            if set.traffic {
+            session.run(&mut flight, &session_pad(&pad), dt, |x, z| city.height(x, z));
+            if flight.traffic {
                 traffic.step(dt);
             }
 
+            // -------------------------------------------------------------- the interface
+            // It is shown the flight and the settings as they now are, then takes its turn.
+            let tu = Instant::now();
+            {
+                let state = &mut channel().state;
+                session.publish(&flight, state);
+                if !flight.stats {
+                    state.stats.clear();
+                } else if frame_no % 30 == 0 {
+                    state.stats = format!("{:.1} fps · {:.1} ms · late {} · {} draws · {}k tris", 1000.0 / timing.avg().max(0.1), timing.avg(), timing.late, stats.draws, (stats.tris[0] + stats.tris[1] + stats.tris[2]) / 1000);
+                }
+            }
+            shell.ui.turn(dt, &pad, menu, Some(&session));
+            ui_ms = ui_ms * 0.9 + tu.elapsed().as_secs_f32() * 100.0;
+
             // -------------------------------------------------------------- camera and light
-            let (eye, look, fov) = match set.view {
-                Some((pos, target, fov)) => (pos, (target - pos).norm_or(v3(0.0, 0.0, -1.0)), fov),
-                None => (cam.pos, cam.look(), cam.fov),
-            };
+            let (eye, look, fov) = flight.eye();
             let aspect = 960.0 / 544.0;
             let vp = mat::mul(&mat::perspective(fov, aspect, 2.0, 12000.0), &mat::view(eye, look, 0.0));
-            let light = sky::light(set.hour, DAY);
+            let light = sky::light(flight.hour, DAY);
             shadows.update(light.dir);
             let half = |a: [f32; 3], b: [f32; 3], s: f32| [(a[0] + s * b[0]) * 0.5, (a[1] + s * b[1]) * 0.5, (a[2] + s * b[2]) * 0.5];
             let (side, rise) = (half(light.sky, light.ground, 1.0), half(light.sky, light.ground, -1.0));
@@ -560,6 +678,7 @@ fn main() {
             let slot = (frame_no % 2) as usize;
             // This slot's vertices were last used two frames ago: the GPU must be done with them.
             fence.wait(slot);
+            let waited = t2.elapsed();
             ring.next_frame();
             let c = city.city;
             let grid = (c.grid_w as f32 * c.grid_step, c.grid_h as f32 * c.grid_step);
@@ -570,6 +689,16 @@ fn main() {
             if let Err(e) = post.bloom(ctx, &look_now, g::vita2d_get_current_fb(), 960) {
                 pocketjs_vita::vita_log(format_args!("tokyo: {e}"));
             }
+            // The interface and the Devkit menu draw from vita2d's one pool of temporary vertices. This slot's
+            // frame takes its own half, last written two frames ago, which `fence.wait(slot)` above saw out of
+            // the GPU: no frame overwrites vertices still being read.
+            let open_display = || {
+                g::vita2d_pool_reset();
+                if slot == 1 {
+                    g::vita2d_pool_malloc(POOL_BYTES / 2);
+                }
+                g::vita2d_start_drawing_advanced(core::ptr::null_mut(), 0);
+            };
             if set.profile {
                 // Into the scene's own target, timed by itself, then copied to the display.
                 if let Err(e) = post.begin_scene(ctx) {
@@ -577,57 +706,34 @@ fn main() {
                 }
                 post.draw_sky(ctx, &sky_mvp, &sky_f);
                 stats = city.draw(ctx, &vp, eye, &frame, &look_f, shadows.texture(), &set.show);
-                if set.traffic {
+                if flight.traffic {
                     cars.draw(ctx, &traffic, &mut ring, &vp, eye, &world_map, &frame, &look_f, shadows.texture());
                 }
                 post.end_scene(ctx, Some(scene_fence.signal(slot)));
                 let tg = Instant::now();
                 scene_fence.wait(slot);
                 scene_ms = scene_ms * 0.9 + tg.elapsed().as_secs_f32() * 100.0;
-                g::vita2d_pool_reset();
-                g::vita2d_start_drawing_advanced(core::ptr::null_mut(), 0);
+                open_display();
                 post.copy_scene(ctx);
             } else {
-                g::vita2d_pool_reset();
-                g::vita2d_start_drawing_advanced(core::ptr::null_mut(), 0);
+                open_display();
                 post.full_view(ctx);
                 post.draw_sky(ctx, &sky_mvp, &sky_f);
                 stats = city.draw(ctx, &vp, eye, &frame, &look_f, shadows.texture(), &set.show);
-                if set.traffic {
+                if flight.traffic {
                     cars.draw(ctx, &traffic, &mut ring, &vp, eye, &world_map, &frame, &look_f, shadows.texture());
                 }
             }
             post.add_glow(ctx, &look_now);
-            // vita2d's overlay (text, the debug menu) expects its own viewport and no depth.
+            // vita2d draws (the interface, the menu) expect its own viewport and no depth.
             g::sceGxmSetViewport(ctx, 480.0, 480.0, 272.0, -272.0, 0.5, 0.5);
             gpu::state_overlay(ctx, false);
-            if set.stats {
-                let line = format!(
-                    "{:.1} fps  {:.1} ms (worst {:.1})  late {}  cpu {:.1}  scene {:.1}  {}k tris {} draws  {}/{}/{}  {:02}:{:02}",
-                    1000.0 / timing.avg().max(0.1),
-                    timing.avg(),
-                    timing.worst(),
-                    timing.late,
-                    draw_ms,
-                    scene_ms,
-                    (stats.tris[0] + stats.tris[1] + stats.tris[2]) / 1000,
-                    stats.draws,
-                    stats.places[0],
-                    stats.places[1],
-                    stats.places[2],
-                    set.hour as u32,
-                    (set.hour.fract() * 60.0) as u32,
-                );
-                text(font, 12, 24, 0xffff_ffff, 0.8, &line);
+            let td = Instant::now();
+            if set.interface {
+                shell.ui.draw();
             }
-            if !set.stats {
-                let name = meta["name"].as_str().unwrap_or("Tokyo");
-                text(font, 28, 520, 0xe0ff_ffff, 1.0, &format!("{name}   {:02}:{:02}{}", set.hour as u32, (set.hour.fract() * 60.0) as u32, if set.tour { "   TOUR" } else { "" }));
-                if seconds < 9.0 {
-                    text(font, 28, 492, 0xb0ff_ffff, 0.8, "sticks: fly and look    L R: down, up    X: fast    left right: the clock    START: tour");
-                }
-            }
-            dev.overlay();
+            ui_draw_ms = ui_draw_ms * 0.9 + td.elapsed().as_secs_f32() * 100.0;
+            shell.dev.overlay();
             g::sceGxmEndScene(ctx, core::ptr::null(), fence.signal(slot));
             draw_ms = draw_ms * 0.9 + t2.elapsed().as_secs_f32() * 100.0;
             if set.profile {
@@ -636,18 +742,39 @@ fn main() {
                 gpu_ms = gpu_ms * 0.9 + tg.elapsed().as_secs_f32() * 100.0;
             }
             // The distances of the levels of detail follow the triangle budget: in quickly when a frame draws too
-            // many, out slowly when there is room.
+            // many, out slowly when there is room. They also come in when this frame had to wait for the GPU to
+            // finish the frame before last: the GPU is then a refresh behind, which a view that fills more
+            // pixels than its triangles say brings about, and the next frames would be late. After such a wait
+            // the distances stay in for two seconds.
             if set.govern {
                 let drawn = stats.tris[0] + stats.tris[1] + stats.tris[2];
-                if drawn > set.budget {
+                // A list over the city is a scrim over the whole screen and a clip, which vita2d makes of
+                // passes over the whole screen's stencil: the GPU's time for them comes out of the city
+                // behind the scrim.
+                let listing = session.mode != Mode::Flight;
+                let budget = if listing { set.budget / 4 * 3 } else { set.budget };
+                // A list comes up in one frame: the distances come in with it, not ten frames after it.
+                if listing && !listed {
+                    scale = min(scale, 0.75);
+                }
+                listed = listing;
+                let behind = !set.profile && waited.as_secs_f32() > BEHIND;
+                if behind {
+                    hold = 120;
+                }
+                if drawn > budget {
                     scale *= 0.97;
-                } else if (drawn as f32) < set.budget as f32 * 0.88 {
+                } else if behind {
+                    scale *= 0.985;
+                } else if (drawn as f32) < budget as f32 * 0.88 && hold == 0 {
                     scale *= 1.008;
                 }
+                hold = hold.saturating_sub(1);
                 scale = clamp(scale, 0.25, 1.0);
                 set.show.near = set.reach.0 * scale;
                 set.show.mid = set.reach.1 * scale;
             }
+            let worked = t_frame.elapsed().saturating_sub(waited);
             g::vita2d_swap_buffers();
             // Hold the pace: a frame is shown for `pace` refreshes.
             while sceDisplayGetVcount().wrapping_sub(last_vcount) < set.pace {
@@ -657,6 +784,13 @@ fn main() {
             let now = Instant::now();
             let shown = sceDisplayGetVcount().wrapping_sub(last_vcount);
             timing.push((now - last).as_secs_f32() * 1000.0, shown > set.pace);
+            if shown > set.pace {
+                if worked.as_secs_f32() > 0.012 {
+                    late_cpu += 1;
+                } else {
+                    late_gpu += 1;
+                }
+            }
             last = now;
 
             // -------------------------------------------------------------- status
@@ -673,29 +807,31 @@ fn main() {
                 }
             }
             if frame_no % 10 == 0 {
-                dev.engine = json!({
+                shell.dev.engine = json!({
                     "stage": "running",
+                    "mode": session.mode.name(),
+                    "interface": {"up": shell.ui.live(), "open": channel().is_open(), "error": shell.ui.error, "turns": shell.ui.turns, "turnMs": shell.ui.turn_ms, "worstTurnMs": shell.ui.worst_ms, "collections": shell.ui.collections, "collectMs": shell.ui.collect_ms},
                     "pack": {"path": pack_path, "sha256": pack_id["sha256"], "bytes": pack_id["bytes"], "name": meta["name"], "area": meta["area"], "profile": meta["profile"], "source": meta["source"]},
                     "loadMs": load_ms, "copyMs": copy_ms,
-                    "frameMs": timing.avg(), "worstMs": timing.worst(), "late": timing.late, "frames": timing.frames, "pace": set.pace,
-                    "cpuMs": {"draw": draw_ms},
+                    "frameMs": timing.avg(), "worstMs": timing.worst(), "late": timing.late, "lateBy": {"cpu": late_cpu, "gpu": late_gpu}, "frames": timing.frames, "pace": set.pace,
+                    "cpuMs": {"draw": draw_ms, "interface": ui_ms, "interfaceDraw": ui_draw_ms},
                     "gpuMs": if set.profile { json!(gpu_ms) } else { Value::Null },
                     "sceneMs": if set.profile { json!(scene_ms) } else { Value::Null },
                     "city": {"draws": stats.draws, "tris": {"top": stats.tris[0], "wall": stats.tris[1], "solid": stats.tris[2]}, "places": stats.places, "turned": stats.turned},
                     "camera": {"pos": [eye.x, eye.y, eye.z], "look": [look.x, look.y, look.z], "fov": fov},
-                    "clock": {"hour": set.hour, "rate": set.rate, "night": light.night},
+                    "clock": {"hour": flight.hour, "rate": flight.rate, "night": light.night},
                     "shadows": {"sweeps": shadows.sweeps, "sweepMs": shadows.sweep_ms()},
                     "cars": {"all": traffic.cars.len(), "shown": cars.shown},
-                    "tour": {"on": set.tour, "at": tour_at, "seconds": tour.seconds()}, "governor": {"on": set.govern, "budget": set.budget, "scale": scale},
-                    "settings": {"near": set.show.near, "mid": set.show.mid, "top": set.show.top, "wall": set.show.wall, "solid": set.show.solid, "profile": set.profile, "post": {"bloom": set.look.bloom}},
+                    "tour": {"on": flight.tour_on, "at": flight.tour_at, "seconds": flight.tour.seconds()}, "governor": {"on": set.govern, "budget": set.budget, "scale": scale, "held": hold},
+                    "settings": {"near": set.show.near, "mid": set.show.mid, "top": set.show.top, "wall": set.show.wall, "solid": set.show.solid, "profile": set.profile, "stats": flight.stats, "traffic": flight.traffic, "invert": session.invert, "post": {"bloom": set.look.bloom}},
                     "programs": {"compiled": gpu.compiled, "cached": gpu.cached},
                     "msaa": samples,
                     "memory": {"geometry": city.geometry_bytes, "textures": city.texture_bytes, "vram": vram.reserved()},
                     "clockMhz": [scePowerGetArmClockFrequency(), scePowerGetGpuClockFrequency()],
                 });
             }
-            dev.publish(frame_no, "tokyo");
-            serve(&mut dev, frame_no, action);
+            shell.dev.publish(frame_no, "tokyo");
+            serve(&mut shell.dev, frame_no, action);
             frame_no = frame_no.wrapping_add(1);
         }
     }
@@ -729,7 +865,7 @@ unsafe fn serve(dev: &mut dev::Host, frame: u32, action: Action) {
         }
         Some(Op::Push | Op::Reload | Op::Reset) => {
             if let Some(request) = request.take() {
-                request.finish(Err("Pocket Tokyo has no JS guest; use native".into()));
+                request.finish(Err("Pocket Tokyo's interface is read from the share when the app starts; use native to start it again".into()));
             }
         }
         None => {}
