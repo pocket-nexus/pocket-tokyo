@@ -77,10 +77,11 @@ function Plate(props: { width: number; height: number }) {
 }
 
 /**
- * Tokyo's clock: what the sky is doing over the hour and the minute. The
- * digits stand at the left of a cell of fixed size: a number written to its
- * node keeps the place layout gave the last one, so text that is centred or
- * set to the right would drift.
+ * Tokyo's clock: what the sky is doing over the hour and the minute; where
+ * `compact`, the hour and the minute alone (a column 65 pixels wide holds no
+ * "AFTERNOON"). The digits stand at the left of a cell of fixed size: a
+ * number written to its node keeps the place layout gave the last one, so
+ * text that is centred or set to the right would drift.
  */
 export function Clock(props: { host: Host; compact?: boolean }) {
   let digits: NodeMirror | undefined, word: NodeMirror | undefined;
@@ -93,11 +94,13 @@ export function Clock(props: { host: Host; compact?: boolean }) {
     const now = phase(minutes);
     if (now !== named) hotText(word, (named = now));
   })));
-  const width = () => (props.compact ? 62 : 76);
+  const width = () => (props.compact ? 52 : 76);
   return (
     <View class="relative flex-col" style={{ width: width() }}>
-      <Plate width={width()} height={props.compact ? 40 : 46} />
-      <Text ref={word} class="text-xs font-bold tracking-wide" style={{ width: width(), height: 14, textColor: DIM }}>MIDDAY</Text>
+      <Plate width={width()} height={props.compact ? 24 : 46} />
+      <Show when={!props.compact}>
+        <Text ref={word} class="text-xs font-bold tracking-wide" style={{ width: width(), height: 14, textColor: DIM }}>MIDDAY</Text>
+      </Show>
       <Text ref={digits} class={props.compact ? "text-lg font-bold" : "text-2xl font-bold"} style={{ width: width(), height: props.compact ? 24 : 30, textColor: INK }}>12:00</Text>
     </View>
   );
