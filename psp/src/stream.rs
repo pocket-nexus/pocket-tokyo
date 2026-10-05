@@ -24,7 +24,7 @@ use tokyo_sim::mat;
 use tokyo_sim::math::*;
 
 use crate::shade::{self, Ground};
-use crate::store;
+use crate::{mem, store};
 
 pub const SLOTS: usize = 40;
 const FREE: u32 = 0;
@@ -67,9 +67,13 @@ pub struct Streamer {
     records: Vec<NearCell>,
     /// Per cell: its slot, or -1.
     slot_of: Vec<i8>,
-    _mem: Vec<Vec<u8>>,
-    _mixed: Vec<u32>,
     pub slot_bytes: usize,
+}
+
+/// Bytes of a slot: the largest record, and no less than a block of the kernel's.
+pub fn slot_bytes(records: &[NearCell]) -> usize {
+    let largest = records.iter().map(|r| r.size as usize).max().unwrap_or(0);
+    ((largest + 63) & !63).max(64 * 1024)
 }
 
 unsafe fn shade_slot(s: &Slot) {
@@ -134,21 +138,23 @@ fn range(c: &Cell, eye: V3, look: V3) -> f32 {
 impl Streamer {
     pub unsafe fn start(file: &store::PackFile, records: Vec<NearCell>) -> Result<Streamer, &'static str> {
         let near = file.section(tokyo_pack::NEAR)?.offset;
-        let largest = records.iter().map(|r| r.size as usize).max().unwrap_or(0);
-        let slot_bytes = (largest + 63) & !63;
-        let mut mem: Vec<Vec<u8>> = Vec::with_capacity(SLOTS);
-        let mut mixed = alloc::vec![0u32; SLOTS * 256];
+        let slot_bytes = slot_bytes(&records);
+        // The slots and their palettes stay for the rest of the run, at their exact size.
+        let mixed = mem::permanent(SLOTS * 1024) as *mut u32;
+        if mixed.is_null() {
+            return Err("no memory for the cells' slots");
+        }
+        ptr::write_bytes(mixed, 0, SLOTS * 256);
         for i in 0..SLOTS {
-            // (64 KiB or more: a block of the kernel's, which starts on a 256-byte boundary)
-            let mut m = alloc::vec![0u8; slot_bytes.max(64 * 1024)];
-            TABLE[i].mem = m.as_mut_ptr();
-            TABLE[i].mixed = mixed.as_mut_ptr().add(i * 256);
-            mem.push(m);
+            // (64 KiB or more: a block of the kernel's while it has room, which starts on a 256-byte boundary)
+            let m = mem::permanent(slot_bytes);
+            if m.is_null() {
+                return Err("no memory for the cells' slots");
+            }
+            TABLE[i].mem = m;
+            TABLE[i].mixed = mixed.add(i * 256);
         }
-        FD = sceIoOpen(file.path.as_ptr(), IoOpenFlags::RD_ONLY, 0);
-        if FD.0 < 0 {
-            return Err("the pack did not open a second time");
-        }
+        FD = store::cells().ok_or("the pack did not open a second time")?;
         let id = sceKernelCreateThread(b"tokyo_cells\0".as_ptr(), reader, 36, 16 * 1024, ThreadAttributes::USER, ptr::null_mut());
         if id.0 < 0 {
             store::LAST_CODE = id.0;
@@ -163,7 +169,7 @@ impl Streamer {
                 r
             })
             .collect();
-        Ok(Streamer { records, slot_of, _mem: mem, _mixed: mixed, slot_bytes })
+        Ok(Streamer { records, slot_of, slot_bytes })
     }
 
     /// Whether a cell's near level is in memory.

@@ -1,18 +1,23 @@
 #!/usr/bin/env bun
-// Pocket Tokyo on PSP: build the PRX with PocketJS's pinned rust-psp
-// toolchain, stage it with the pack on a PSPLINK share, start it, steer and
-// measure it.
+// Pocket Tokyo on PSP: compile the interface (ui/) for the PSP, build the
+// PRX with PocketJS's pinned rust-psp toolchain, stage both with the pack on a
+// PSPLINK share, start it, steer and measure it.
 //
-//   bun tools/psp.ts build                    # psp/ → dist/psp/{pocket-tokyo.prx,EBOOT.PBP}
+//   bun tools/psp.ts build                    # ui/ + psp/ → dist/psp/{pocket-tokyo.prx,EBOOT.PBP,tokyo.js,tokyo.pak}
 //   bun tools/psp.ts serve                    # start usbhostfs_pc (detached, logged) when none is running
 //   bun tools/psp.ts run [--no-build]         # build, stage, reset PSPLINK, wait for it to reconnect, start the PRX
 //   bun tools/psp.ts status
-//   bun tools/psp.ts ctl "tour=1 hour=18"     # host0:/tokyo/control.txt (see tokyo_sim::flight::Flight::control)
+//   bun tools/psp.ts ctl "tour=1 hour=18"     # host0:/tokyo/control.txt (see tokyo_sim::flight::Flight::control;
+//                                             # `mode=title|flight|menu` sets the flow, `ui=tour|fly|menu|resume|title`
+//                                             # asks what the interface's lists ask, `press=<mask>` and `rest=<turns>`
+//                                             # press PocketJS buttons on it)
 //   bun tools/psp.ts capture [--out f.png]    # PSPLINK screenshot
-//   bun tools/psp.ts bench [--seconds 60]     # the tour's frame timings → .pocket-build/validation/psp/
+//   bun tools/psp.ts bench [--seconds 60]     # the tour's frame timings, the interface up → .pocket-build/validation/psp/
 //   bun tools/psp.ts package                  # dist/psp/PSP/GAME/PocketTokyo for a Memory Stick
-//   bun tools/psp.ts emu [--frames 240] [--ctl "view=..."] [--out f.png] [--standalone]
-//                                             # the same PRX in PPSSPPHeadless (software GE): a frame and its status
+//   bun tools/psp.ts emu [--frames 240] [--ctl "view=..."] [--out f.png] [--standalone] [--small] [--keep] [--no-interface]
+//                                             # the same PRX in PPSSPPHeadless (software GE): a frame and its status;
+//                                             # --small runs it with the 24 MB of a PSP-1000, where the city leaves
+//                                             # no room for the interface; --keep leaves interface.json from the last run
 //
 // One usbhostfs_pc owns the PSP's cable. If one is running (in any checkout),
 // these commands use its directory; `--share DIR` names another. Device
@@ -22,7 +27,10 @@ import { $ } from "bun";
 import { closeSync, cpSync, existsSync, mkdirSync, openSync, readFileSync, readSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { deflateSync } from "node:zlib";
+import { extractHostBuildInputs, hostBuildEnvironment } from "../vendor/pocketjs/framework/src/manifest/index.ts";
 import { withDeviceLease } from "../vendor/pocketjs/tools/device-lease.ts";
+import { POCKET3D_ICON } from "../vendor/pocketjs/tools/pocket3d-icon.ts";
+import { compileInterface, type Interface } from "./ui.ts";
 
 const ROOT = resolve(import.meta.dir, "..");
 const OUT = resolve(ROOT, "dist/psp");
@@ -93,20 +101,112 @@ function encodePng(rgba: Uint8Array, w: number, h: number): Uint8Array {
   return Buffer.concat([new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]), chunk("IHDR", head), chunk("IDAT", deflateSync(raw)), chunk("IEND", new Uint8Array(0))]);
 }
 
+/** The interface's bundle and its pak: the program reads them beside the pack. */
+const UI_FILES = ["tokyo.js", "tokyo.pak"];
+
+/** The interface compiled for the PSP; the last compiled one when `ui/` does not compile just now. */
+async function interfaceBundle(): Promise<Interface> {
+  try {
+    return await compileInterface("psp", opt("--area", "shiba"));
+  } catch (e) {
+    const directory = `${ROOT}/.pocket-build/ui/psp`;
+    if (!UI_FILES.every((f) => existsSync(`${directory}/${f}`)) || !existsSync(`${directory}/plan.json`)) throw e;
+    console.warn(`psp: ui/ did not compile (${String(e).split("\n")[0]}); using the bundle already in ${directory}`);
+    const plan = JSON.parse(readFileSync(`${directory}/plan.json`, "utf8"));
+    return { directory, plan, inputs: extractHostBuildInputs(plan) };
+  }
+}
+
+/** A PARAM.SFO: keys in order, 32-bit integers and NUL-terminated strings padded to four bytes. */
+function paramSfo(values: Record<string, number | string>): Buffer {
+  const keys = Object.keys(values).sort();
+  const data = keys.map((key) => {
+    const value = values[key]!;
+    if (typeof value === "number") {
+      const bytes = Buffer.alloc(4);
+      bytes.writeUInt32LE(value);
+      return { format: 0x0404, used: 4, bytes };
+    }
+    const text = Buffer.from(value + "\0");
+    return { format: 0x0204, used: text.length, bytes: Buffer.concat([text, Buffer.alloc((4 - (text.length % 4)) % 4)]) };
+  });
+  const names = Buffer.from(keys.map((key) => key + "\0").join(""));
+  const keyTable = 20 + keys.length * 16;
+  const dataTable = keyTable + Math.ceil(names.length / 4) * 4;
+  const out = Buffer.alloc(dataTable + data.reduce((sum, d) => sum + d.bytes.length, 0));
+  out.write("\0PSF");
+  out.writeUInt32LE(0x101, 4);
+  out.writeUInt32LE(keyTable, 8);
+  out.writeUInt32LE(dataTable, 12);
+  out.writeUInt32LE(keys.length, 16);
+  let nameAt = 0;
+  let dataAt = 0;
+  keys.forEach((key, i) => {
+    const at = 20 + i * 16;
+    const d = data[i]!;
+    out.writeUInt16LE(nameAt, at);
+    out.writeUInt16LE(d.format, at + 2);
+    out.writeUInt32LE(d.used, at + 4);
+    out.writeUInt32LE(d.bytes.length, at + 8);
+    out.writeUInt32LE(dataAt, at + 12);
+    d.bytes.copy(out, dataTable + dataAt);
+    nameAt += key.length + 1;
+    dataAt += d.bytes.length;
+  });
+  names.copy(out, keyTable);
+  return out;
+}
+
+/**
+ * Packs the PRX as an EBOOT. `large` asks for the 52 MB of a PSP-2000 or later (cargo-psp has no
+ * setting for it): the city and the interface together need more than a PSP-1000's 24 MB, where
+ * the program runs without the interface. ICON0.PNG is the Pocket3D icon from PocketJS; PIC1.PNG is
+ * a capture of this game.
+ */
+async function pbp(out: string, prx: string, large: boolean) {
+  const sfo = `${out}.SFO`;
+  writeFileSync(sfo, paramSfo({ BOOTABLE: 1, CATEGORY: "MG", DISC_VERSION: "1.00", ...(large ? { MEMSIZE: 1 } : {}), PARENTAL_LEVEL: 1, PSP_SYSTEM_VER: "1.00", REGION: 0x8000, TITLE: "Pocket Tokyo" }));
+  await $`pack-pbp ${out} ${sfo} ${POCKET3D_ICON.psp} NULL NULL ${ROOT}/psp/assets/pic1.png NULL ${prx} NULL`.quiet();
+  rmSync(sfo, { force: true });
+}
+
 async function build() {
+  const ui = await interfaceBundle();
   // Loaded by path at run time: PocketJS's toolchain module resolves its manifest through its own tsconfig.
   const toolchain: string = `${ROOT}/vendor/pocketjs/tools/psp-toolchain.ts`;
   const tc = (await import(toolchain)).resolvePspBuildToolchain();
+  // The interface's runtime (PocketJS's PSP host library) builds QuickJS from C for the same target, with
+  // PocketJS's own flags for it, and checks the target it was compiled for against the interface's plan.
   await $`${tc.rustup} run ${tc.manifest.rust.toolchain} cargo psp --release`.cwd(`${ROOT}/psp`).env({
     ...tc.environment,
+    RUSTFLAGS: "-A linker-messages -A unexpected-cfgs -A unstable-name-collisions",
+    CRATE_CC_NO_DEFAULTS: "1",
+    TARGET_CC: "clang",
+    TARGET_AR: `${tc.llvmBin}/llvm-ar`,
+    TARGET_CFLAGS:
+      `-target mipsel-sony-psp -mcpu=mips2 -msingle-float -mlittle-endian -mno-abicalls -fno-pic -G0 -mno-check-zero-division ` +
+      `-fno-stack-protector -O2 -I${tc.sdk.path}/psp/include -I${tc.sdk.path}/psp/sdk/include`,
+    AR_mipsel_sony_psp: `${tc.llvmBin}/llvm-ar`,
+    RANLIB_mipsel_sony_psp: `${tc.llvmBin}/llvm-ranlib`,
+    ...hostBuildEnvironment(ui.inputs, { outputDirectory: ui.directory, embedApp: false }),
+    POCKETJS_OFFLOAD_SLOT: "",
     RUST_PSP_ABORT_ONLY: "1",
     RUST_PSP_TARGET: `${ROOT}/vendor/pocketjs/hosts/psp/targets/mipsel-sony-psp.json`,
   });
   const from = `${ROOT}/psp/target/mipsel-sony-psp/release`;
   mkdirSync(OUT, { recursive: true });
   cpSync(`${from}/pocket-tokyo-psp.prx`, `${OUT}/pocket-tokyo.prx`);
-  cpSync(`${from}/EBOOT.PBP`, `${OUT}/EBOOT.PBP`);
-  console.log(`psp: ${OUT}/pocket-tokyo.prx ${(readFileSync(`${OUT}/pocket-tokyo.prx`).length / 1024).toFixed(0)} KiB`);
+  await pbp(`${OUT}/EBOOT.PBP`, `${OUT}/pocket-tokyo.prx`, true);
+  for (const f of UI_FILES) cpSync(`${ui.directory}/${f}`, `${OUT}/${f}`);
+  console.log(`psp: ${OUT}/pocket-tokyo.prx ${(readFileSync(`${OUT}/pocket-tokyo.prx`).length / 1024).toFixed(0)} KiB, interface ${UI_FILES.map((f) => `${f} ${(readFileSync(`${OUT}/${f}`).length / 1024).toFixed(0)} KiB`).join(", ")}`);
+}
+
+/** Puts the interface's files in `dir` when they differ from the built ones. */
+function stageInterface(dir: string) {
+  for (const f of UI_FILES) {
+    if (!existsSync(`${OUT}/${f}`)) throw new Error(`no ${OUT}/${f}: run \`bun tools/psp.ts build\` first`);
+    if (!existsSync(`${dir}/${f}`) || sha(`${dir}/${f}`) !== sha(`${OUT}/${f}`)) cpSync(`${OUT}/${f}`, `${dir}/${f}`);
+  }
 }
 
 function sha(path: string): string {
@@ -205,7 +305,8 @@ async function capture(out: string) {
 }
 
 async function bench(seconds: number, extra: string) {
-  ctl(`tour=1 restart=1 view=off ${extra}`);
+  // The tour as a person sees it: the flight, with the interface's instruments over it.
+  ctl(`mode=flight tour=1 restart=1 view=off ${extra}`);
   await Bun.sleep(4000);
   const first = readStatus();
   const build = JSON.parse(readFileSync(`${app}/build.json`, "utf8"));
@@ -216,7 +317,7 @@ async function bench(seconds: number, extra: string) {
     await Bun.sleep(1000);
     const s = readStatus();
     if (s.frames === prev.frames) continue;
-    samples.push({ t: (Date.now() - start) / 1000, frameMs: s.frameMs, worstMs: s.worstMs, late: s.late, frames: s.frames, cpuMs: s.cpuMs, gpuMs: s.gpuMs, draws: s.draws, drawn: s.drawn, tris: s.tris, places: s.places, reach: s.reach, hour: s.clock.hour, cells: s.cells, eye: s.eye });
+    samples.push({ t: (Date.now() - start) / 1000, frameMs: s.frameMs, worstMs: s.worstMs, late: s.late, frames: s.frames, cpuMs: s.cpuMs, gpuMs: s.gpuMs, draws: s.draws, drawn: s.drawn, tris: s.tris, places: s.places, reach: s.reach, hour: s.clock.hour, cells: s.cells, eye: s.eye, interface: s.interface });
     prev = s;
   }
   if (samples.length < 2) throw new Error("no samples: is the program on screen?");
@@ -236,6 +337,14 @@ async function bench(seconds: number, extra: string) {
     draws: { mean: Math.round(mean((s) => s.draws)), most: Math.max(...samples.map((s) => s.draws)) },
     cpuMs: { select: mean((s) => s.cpuMs.select), list: mean((s) => s.cpuMs.list) },
     gpuWaitMs: mean((s) => s.gpuMs),
+    interface: last.interface && {
+      up: last.interface.up,
+      turnsPerSecond: (last.interface.turns - first.interface.turns) / seconds,
+      turnMs: { script: mean((s) => s.interface.turnMs.script), layout: mean((s) => s.interface.turnMs.layout), worst: last.interface.turnMs.worst },
+      cpuMsPerFrame: mean((s) => s.interface.cpuMs),
+      listWords: Math.max(...samples.map((s) => s.interface.words)),
+      bytes: last.interface.bytes,
+    },
     hours: [first.clock.hour, last.hour],
     control: extra,
   };
@@ -270,7 +379,8 @@ switch (cmd) {
     await device(async () => {
       const id = stage(app);
       cpSync(`${OUT}/pocket-tokyo.prx`, `${share}/pocket-tokyo.prx`);
-      writeFileSync(`${app}/build.json`, JSON.stringify({ prxSha256: sha(`${OUT}/pocket-tokyo.prx`), packSha256: id }, null, 1));
+      stageInterface(app);
+      writeFileSync(`${app}/build.json`, JSON.stringify({ prxSha256: sha(`${OUT}/pocket-tokyo.prx`), packSha256: id, interfaceSha256: Object.fromEntries(UI_FILES.map((f) => [f, sha(`${OUT}/${f}`)])) }, null, 1));
       writeFileSync(`${app}/boot.txt`, `${opt("--boot", "title=0")}\n`);
       rmSync(`${app}/status.json`, { force: true });
       // A reset restarts PSPLINK from the Memory Stick and drops the cable for several seconds. A command sent
@@ -336,10 +446,16 @@ switch (cmd) {
     mkdirSync(`${root}/tokyo`, { recursive: true });
     stage(standalone ? root : `${root}/tokyo`);
     rmSync(standalone ? `${root}/tokyo/city.pack` : `${root}/city.pack`, { force: true });
-    cpSync(`${OUT}/EBOOT.PBP`, `${root}/EBOOT.PBP`);
+    // The interface's files and what it kept go where the pack is.
+    // `--keep` leaves what the interface kept in the last run (`interface.json`) for this one to read.
+    for (const f of [...UI_FILES, ...(argv.includes("--keep") ? [] : ["interface.json"])]) for (const dir of [root, `${root}/tokyo`]) rmSync(`${dir}/${f}`, { force: true });
+    if (!argv.includes("--no-interface")) stageInterface(standalone ? root : `${root}/tokyo`);
+    // `--small`: without the request for large memory the emulator gives the program a PSP-1000's 24 MB.
+    if (argv.includes("--small")) await pbp(`${root}/EBOOT.PBP`, `${OUT}/pocket-tokyo.prx`, false);
+    else cpSync(`${OUT}/EBOOT.PBP`, `${root}/EBOOT.PBP`);
     const frames = Number(opt("--frames", "240"));
     for (const f of ["status.json", "shot.raw"]) rmSync(`${root}/tokyo/${f}`, { force: true });
-    writeFileSync(`${root}/tokyo/boot.txt`, `title=0 stats=1 ${opt("--ctl", "")} shot=${frames} exit=${frames + 3}\n`);
+    writeFileSync(`${root}/tokyo/boot.txt`, `title=0 ${opt("--ctl", "")} shot=${frames} exit=${frames + 3}\n`);
     const run = await $`${headless} --root ${root} --graphics=${opt("--graphics", "software")} --timeout=${opt("--timeout", "240")} ${root}/EBOOT.PBP`.nothrow().quiet();
     const log = (run.stdout.toString() + run.stderr.toString()).trim();
     if (log) console.log(log.split("\n").slice(-12).join("\n"));
@@ -362,6 +478,7 @@ switch (cmd) {
     mkdirSync(dir, { recursive: true });
     cpSync(`${OUT}/EBOOT.PBP`, `${dir}/EBOOT.PBP`);
     stage(dir);
+    stageInterface(dir);
     rmSync(`${dir}/city.json`, { force: true });
     console.log(`psp: copy ${OUT}/PSP to the root of a Memory Stick`);
     break;
