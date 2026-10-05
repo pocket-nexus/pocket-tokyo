@@ -1,6 +1,8 @@
-; Painted geometry: a colour, lit by the sector its face looks to.
+; Painted geometry: a colour, lit by the sector its face looks to. Its alpha
+; is how far it shines by that colour once the night has come: a landmark's
+; steel under its floodlights, a lamp whole.
 .fvec mvp[4]
-; z: 1 / 255
+; x: how far the night has come, halved (the combiner doubles); z: 1 / 255
 .fvec scale
 .fvec lights[17]
 .constf consts(0.0, 1.0, 0.0, 1.0)
@@ -24,9 +26,12 @@
     mova a0.x, inao.y
     mov r2, lights[a0.x]
     mul r3, scale.zzzz, inclr
-    mul r3.xyz, r2.xyz, r3.xyz
+    ; the light of the hour on what the face sees of the sky, and what the face gives by itself
     mul r4, scale.zzzz, inao.xxxx
-    mul r3.xyz, r4.xyz, r3.xyz
+    mul r2.xyz, r4.xyz, r2.xyz
+    mul r5.xyz, scale.xxx, r3.www
+    add r2.xyz, r2.xyz, r5.xyz
+    mul r3.xyz, r2.xyz, r3.xyz
     mov r3.w, consts.w
     mov outclr, r3
     mov r9, consts.xxxw

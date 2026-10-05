@@ -389,7 +389,8 @@ void render_frame(C3D_RenderTarget *target, const TkView *view, const TkItem *co
 
   /* What is painted. */
   use(&solid_prog);
-  C3D_FVUnifSet(GPU_VERTEX_SHADER, solid_prog.a, 0.0f, 0.0f, 1.0f / 255.0f, 1.0f);
+  /* (x: how far the night has come for what shines by itself, at the half scale light travels at) */
+  C3D_FVUnifSet(GPU_VERTEX_SHADER, solid_prog.a, 0.5f * night, 0.0f, 1.0f / 255.0f, 1.0f);
   lights(&solid_prog, view);
   stage(0, GPU_REPLACE, GPU_PRIMARY_COLOR, 0, 0, 0, true);
   pass(1);

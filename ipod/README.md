@@ -38,7 +38,7 @@ The programs:
 
 - **Ground and roofs**: (light × shadow + lamps × night) × picture. The lamps' light and the shadows are one texture each over the whole city. Three programs: by day no lamp is read, deep in the night no shadow.
 - **Walls**: light × tint × the facade, and by night plus what the windows emit × how far that building's rooms are on. The light is one of 17 uniforms, picked by the vertex's sector.
-- **Painted geometry and landmarks**: light × colour; a vertex with alpha 255 is a lamp, and adds its own colour × the night.
+- **Painted geometry and landmarks**: (light + night × alpha) × colour. A vertex's alpha is how far it shines by its own colour once the night has come: 255 a lamp, 191 a landmark's steel under its floodlights, 0 everything else.
 - **Haze**: the Vita's formula, per vertex.
 - **The interface**: every program ends with one more read, of the interface's texture at the pixel's own place (a projective read from a varying), and writes colour × (1 − its alpha) + its colour. The two triangles of haze drawn first give a program, and so the interface, to the pixels nothing else covers (past the city's edge, under the dome's lowest ring); the GPU shades a pixel for the last opaque triangle on it, so they cost what they alone show.
 

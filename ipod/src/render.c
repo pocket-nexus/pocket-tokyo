@@ -103,8 +103,9 @@ static const char *const vertex_source =
   "  vRooms = clamp((uScale.w - late * 0.075) * 4.0, 0.0, 1.0) * aColor.a * uScale.z;\n"
   "#endif\n"
   "#ifdef SOLID\n"
-  // (alpha 255 marks a lamp: it shines by its own colour once the night has come)
-  "  vLight = aColor.rgb * (uLights[int(aAo.w)] * (aAo.z * uScale.z * uScale.z) + step(254.5, aColor.a) * uScale.w * uScale.z);\n"
+  // (alpha: how far the face shines by its own colour once the night has come: a lamp whole, a landmark's
+  // steel as far as its floodlights light it)
+  "  vLight = aColor.rgb * (uLights[int(aAo.w)] * (aAo.z * uScale.z * uScale.z) + aColor.a * (uScale.w * uScale.z * uScale.z));\n"
   "#endif\n"
   "#ifdef SKY\n"
   "  vLight = aColor.rgb;\n"
@@ -644,7 +645,7 @@ void render_frame(const TkView *view, const TkItem *const lists[TK_KINDS], const
   // What is painted.
   glDisableVertexAttribArray(3);
   p = use(SOLID, view, 0);
-  // (w: how far a lamp shines by itself, at the half scale light travels at)
+  // (w: how far the night has come for what shines by itself, at the half scale light travels at)
   glUniform4f(p->scale, 0, 0, 1.0f / 255.0f, 0.5f * night);
   glUniform3fv(p->lights, TK_SECTORS + 1, view->lights[0]);
   if (!(view->option & 128))
