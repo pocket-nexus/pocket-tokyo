@@ -13,11 +13,15 @@
 //   bun tools/wgpu.ts shot [--out f.png] [--shape ipod] [--size WxH] [--words "view=… hour=…"] [--against device.png]
 //                                                  one frame on this machine's GPU (Metal) → a PNG and the status
 //   bun tools/wgpu.ts counts                       the triangles and draws of an eye the iPod touch reported, here
-//   bun tools/wgpu.ts check [--headed] [--seconds 5] [--dist]   the tab in Chrome: a frame, frames a second at
-//                                                  two sizes, bytes read before the first frame, the keys
+//   bun tools/wgpu.ts check [--headed] [--seconds 5] [--dist]   the page in Chrome, driven by keys, pointer and
+//                                                  touch: each device from its title into a flight and its menu,
+//                                                  another device picked in a flight, what a frame and a redraw of
+//                                                  the interface cost, what the first frame needs on a slow line
 //                                                  → .pocket-build/validation/web/
 //
 // Every command takes [--area shiba] and [--pack PATH] (default: .pocket-build/city/<area>/ipod60/city.pack).
+// `build` compiles the interface as tools/ui.ts does: it needs `bun install` in vendor/pocketjs and the exported
+// area (.pocket-build/city/<area>/ir).
 // The packs, the site and the captures stay under the ignored .pocket-build/.
 
 import { $ } from "bun";
