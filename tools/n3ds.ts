@@ -32,6 +32,8 @@ const DIR = join(ROOT, ".pocket-build/3ds");
 const ARTIFACT = join(ROOT, "dist/3ds/pocket-tokyo.3dsx");
 const NAME = "pocket-tokyo.3dsx";
 const RECEIPTS = join(ROOT, ".pocket-build/validation/3ds");
+/** Pocket3D's app icon for the 3DS (48 and 24 pixels), from the repository's root: `ICONS` in n3ds/Makefile. */
+const ICONS = "vendor/pocketjs/engine/pocket3d/icon/3ds";
 const argv = process.argv.slice(2);
 const cmd = argv[0] ?? "";
 const opt = (key: string, fallback: string) => {
@@ -107,7 +109,8 @@ async function build() {
   // that was just rewritten, on either side. The snapshot's name is new each build.
   const snapshot = `source-${buildId}-${Date.now()}.tar`;
   for (const f of readdirSync(DIR).filter((f) => f.startsWith("source-"))) rmSync(join(DIR, f));
-  await $`tar --no-xattrs -cf ${join(DIR, snapshot)} n3ds/src n3ds/Makefile n3ds/icon.png .pocket-build/3ds/build/config.h`.cwd(ROOT);
+  // The app icon is Pocket3D's: the snapshot takes its two sizes under the path n3ds/Makefile reads them from.
+  await $`tar --no-xattrs -cf ${join(DIR, snapshot)} n3ds/src n3ds/Makefile ${ICONS}/icon.png ${ICONS}/icon-small.png .pocket-build/3ds/build/config.h`.cwd(ROOT);
   await runContainer(
     `mkdir -p /tmp/source /tmp/build && tar -xf /tokyo/.pocket-build/3ds/${snapshot} -C /tmp/source
 cp /tmp/source/.pocket-build/3ds/build/config.h /tmp/build/config.h

@@ -11,7 +11,11 @@ SOURCE := $(ROOT)/n3ds/src
 POCKET := $(ROOT)/vendor/pocketjs/hosts/3ds
 TITLE := $(ROOT)/vendor/pocketjs/engine/pocket3d/crates/pocket3d-title
 CORE := $(ROOT)/n3ds/core/target/armv6k-nintendo-3ds/release/libtokyo_n3ds_core.a
-ICON := $(SOURCE)/../icon.png
+# The app icon is Pocket3D's, in the two sizes an SMDH stores. tools/n3ds.ts puts both files in the
+# snapshot under the path they have in the repository.
+ICONS := $(SOURCE)/../../vendor/pocketjs/engine/pocket3d/icon/3ds
+ICON := $(ICONS)/icon.png
+SMALL_ICON := $(ICONS)/icon-small.png
 OUT := $(ROOT)/dist/3ds/pocket-tokyo.3dsx
 ROMFS := $(ROOT)/.pocket-build/3ds/romfs
 ARCH := -march=armv6k -mtune=mpcore -mfloat-abi=hard -mtp=soft
@@ -39,8 +43,8 @@ $(addprefix $(BUILD)/,$(WIRE)): $(BUILD)/%.o: $(POCKET)/src/%.c | $(BUILD)
 	$(CC) $(CFLAGS) -c $< -o $@
 $(BUILD)/tokyo.elf: $(OBJECTS) $(CORE)
 	$(CC) $(LDFLAGS) $(OBJECTS) $(CORE) -L$(DEVKITPRO)/libctru/lib -L$(DEVKITPRO)/portlibs/3ds/lib -lcitro3d -lmbedcrypto -lctru -lm -o $@
-$(BUILD)/tokyo.smdh: $(ICON) | $(BUILD)
-	$(DEVKITPRO)/tools/bin/smdhtool --create 'Pocket Tokyo' 'Tokyo, flown over from noon to night' 'Pocket Nexus' $< $@
+$(BUILD)/tokyo.smdh: $(ICON) $(SMALL_ICON) | $(BUILD)
+	$(DEVKITPRO)/tools/bin/smdhtool --create 'Pocket Tokyo' 'Tokyo, flown over from noon to night' 'Pocket Nexus' $(ICON) $@ $(SMALL_ICON)
 $(OUT): $(BUILD)/tokyo.elf $(BUILD)/tokyo.smdh $(ROMFS)/city.pack
 	mkdir -p $(dir $@)
 	$(DEVKITPRO)/tools/bin/3dsxtool $< $@ --smdh=$(BUILD)/tokyo.smdh --romfs=$(ROMFS)

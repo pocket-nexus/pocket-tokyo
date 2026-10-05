@@ -90,7 +90,11 @@ export async function build(argv: string[], assets?: string): Promise<string> {
   // Unsafe-homebrew SELF: loading the USB driver and writing the inactive native slot need the standard homebrew permissions.
   await $`${vitasdk}/bin/vita-make-fself ${target}/${BIN}.velf ${eboot}`;
   await $`${vitasdk}/bin/vita-mksfoex -d ATTRIBUTE2=12 -s TITLE_ID=${c.title} ${"Pocket Tokyo"} ${sfo}`;
-  await packageVitaVpk({ tool: `${vitasdk}/bin/vita-pack-vpk`, sfo, eboot, output: vpk, usbDriver: usb?.driver, applicationAssets: assets ?? `${APP_DIR}/assets` });
+  // The bubble's icon is Pocket3D's, in the development build and in the standalone one; the tree holds the LiveArea pictures.
+  // Loaded by path at run time: the module also bakes the icons, and its rasterizer's types come with PocketJS's own dependencies.
+  const iconModule: string = `${POCKETJS}/tools/pocket3d-icon.ts`;
+  const { POCKET3D_ICON } = (await import(iconModule)) as { POCKET3D_ICON: { vita: string } };
+  await packageVitaVpk({ tool: `${vitasdk}/bin/vita-pack-vpk`, sfo, eboot, output: vpk, usbDriver: usb?.driver, applicationAssets: assets ?? `${APP_DIR}/assets`, icon: POCKET3D_ICON.vita });
 
   mkdirSync(OUT_DIR, { recursive: true });
   cpSync(vpk, `${OUT_DIR}/${c.output}.vpk`);
