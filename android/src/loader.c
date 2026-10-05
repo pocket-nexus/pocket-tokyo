@@ -3,6 +3,7 @@
 // replace it without an install. `files/dev/libtokyo-engine.so` in the app's
 // data is taken when it is there (tools/android.ts native puts it there
 // through run-as); otherwise the one the package installed beside this file.
+// A release (TOKYO_RELEASE) takes the package's and no other.
 #include <android/log.h>
 #include <android/native_activity.h>
 #include <dlfcn.h>
@@ -13,11 +14,13 @@ typedef void Create(ANativeActivity *, void *, size_t);
 
 __attribute__((visibility("default"))) void ANativeActivity_onCreate(ANativeActivity *activity, void *saved, size_t size) {
   char path[1024];
-  struct stat present;
   void *engine = NULL;
+#ifndef TOKYO_RELEASE
+  struct stat present;
   snprintf(path, sizeof path, "%s/dev/libtokyo-engine.so", activity->internalDataPath);
   if (!stat(path, &present))
     engine = dlopen(path, RTLD_NOW);
+#endif
   if (!engine) {
     // The package's libraries stand beside the app's files (`lib` there is the system's link to where it
     // put them). This Android's dladdr gives a library's name without its directory.

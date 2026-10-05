@@ -806,7 +806,10 @@ void android_main(struct android_app *a) {
   a->onAppCmd = on_command;
   a->onInputEvent = on_input;
   snprintf(files, sizeof files, "%s", a->activity->internalDataPath);
+#ifndef TOKYO_RELEASE
+  // A release has no development copies: `dev` stays empty, and no file is under it.
   snprintf(dev, sizeof dev, "%s/dev", files);
+#endif
   mkdir(files, 0700);
   boot_words();
   // The screen stays on while the city is flown over. A development run also comes up over the lock screen.

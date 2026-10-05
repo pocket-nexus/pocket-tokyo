@@ -12,6 +12,8 @@
  *   bun tools/android.ts build                   the two libraries and the interface → .pocket-build/android/
  *   bun tools/android.ts apk                     build, then the signed package with the pack inside → dist/android/PocketTokyo.apk
  *   bun tools/android.ts install                 apk, then `adb install`, answering MIUI's two questions on the phone
+ *   bun tools/android.ts apk --release           the package members install → dist/android/PocketTokyo-release.apk
+ *   bun tools/android.ts install --release       that package on the phone, started
  *   bun tools/android.ts native [--pack]         build, then replace the engine and the interface (and the pack) in the app's data: no install
  *   bun tools/android.ts boot "samples=2"        words a development launch reads (samples, width, height, title=0); `boot ""` clears them
  *   bun tools/android.ts launch                  start it and wait for its first frames of the city
@@ -22,6 +24,14 @@
  *   bun tools/android.ts title [--out PNG]       launches, and brings back the Pocket3D title card's held frame
  *   bun tools/android.ts bench [--seconds 150] [--ctl "budget=90000"]   the tour's frame timings, the instruments over it → .pocket-build/validation/android/
  *   bun tools/android.ts reset [--dev]           stops the app and removes what it kept (the settings; with --dev the development copies too)
+ *
+ * A development package is `android:debuggable` and signed with the phone's debug key: `native`, `boot`,
+ * `launch`, `status`, `ctl`, `capture`, `title`, `bench` and `reset` reach the app's data through run-as.
+ * A release (`--release`) is not debuggable, reads no development copy from `files/dev` and is signed with the
+ * Pocket Nexus Android release key: the PKCS #12 keystore POCKET_NEXUS_ANDROID_KEY names (default
+ * ~/.config/pocket-nexus/signing/pocket-nexus-android-release.p12, alias `pocket-nexus`), its password the
+ * first line of the `.password` file beside it. A phone installs a package over an installed one only under
+ * the same certificate: a development package is uninstalled before a release goes on, and the other way round.
  *
  * The phone is the one device `adb` lists (or ANDROID_SERIAL).
  */
@@ -41,7 +51,9 @@ const area = option("--area", "shiba");
 const out = join(root, ".pocket-build/android");
 const validation = join(root, ".pocket-build/validation/android");
 const pack = join(root, `.pocket-build/city/${area}/redmi1s60/city.pack`);
-const apk = join(root, "dist/android/PocketTokyo.apk");
+/** A release: not debuggable, no development copies, signed with the release key. */
+const release = args.includes("--release");
+const apk = join(root, "dist/android", release ? "PocketTokyo-release.apk" : "PocketTokyo.apk");
 const pocket = join(root, "vendor/pocketjs");
 const id = "dev.pocketnexus.tokyo";
 const version = { code: 1, name: "0.1.0" };
@@ -65,7 +77,7 @@ const buildTools = join(TOOLCHAIN.sdk, "build-tools", TOOLCHAIN.buildTools);
 const androidJar = join(TOOLCHAIN.sdk, "platforms", TOOLCHAIN.platform, "android.jar");
 const cache = join(homedir(), ".cache/pocket-nexus/android");
 const quickJsRoot = join(cache, "sources/quickjs-rs");
-// The key the phone's first PocketJS build was signed with, so later ones install over each other.
+// A development package's key: the one the phone's first PocketJS build was signed with, so later ones install over each other.
 const keystore = [join(homedir(), ".cache/pocket-nexus/redmi1s/signing/pocketjs-redmi1s-debug.keystore"), join(cache, "signing/pocket-tokyo-debug.keystore")];
 
 function run(cmd: string[], cwd = root, env?: Record<string, string>, stdin?: Uint8Array): string {
@@ -218,9 +230,11 @@ async function build(): Promise<{ engine: string; loader: string; ui: string; bu
       `-DPOCKETJS_HOST_ABI=${ui.inputs.hostAbi}`, `-DPOCKET_RASTER_DENSITY=${ui.inputs.viewport.rasterDensity}`]),
   ];
   const sources = ["android/src/main.c", "android/src/bionic18.c", "android/src/loader.c", "android/src/core.h"];
-  const build = createHash("sha256").update([...sources.map((f) => join(root, f)), ...libraries, join(ui.directory, "tokyo.js"), join(ui.directory, "tokyo.pak")].map(sha).join()).digest("hex").slice(0, 12);
+  const build = createHash("sha256").update([...sources.map((f) => join(root, f)), ...libraries, join(ui.directory, "tokyo.js"), join(ui.directory, "tokyo.pak")].map(sha).join() + (release ? " release" : "")).digest("hex").slice(0, 12);
   const [logicalW, logicalH] = ui.inputs.viewport.logical;
-  const strict = ["-Wall", "-Wextra", "-Werror", "-Wno-unused-parameter", `-DTOKYO_BUILD="${build}"`, `-DLOGICAL_WIDTH=${logicalW}`, `-DLOGICAL_HEIGHT=${logicalH}`, ...includes];
+  // A release never looks in files/dev (android/src/main.c, android/src/loader.c).
+  const door = release ? ["-DTOKYO_RELEASE"] : [];
+  const strict = ["-Wall", "-Wextra", "-Werror", "-Wno-unused-parameter", ...door, `-DTOKYO_BUILD="${build}"`, `-DLOGICAL_WIDTH=${logicalW}`, `-DLOGICAL_HEIGHT=${logicalH}`, ...includes];
   for (const key of ["--samples", "--buffer-width", "--buffer-height"])
     if (option(key)) strict.push(`-D${key.slice(2).replace("-", "_").toUpperCase()}=${option(key)}`);
   const own = [compile(join(root, "android/src/main.c"), strict, "-O3"), compile(join(root, "android/src/bionic18.c"), ["-Wall", "-Wextra", "-Werror"]),
@@ -231,10 +245,24 @@ async function build(): Promise<{ engine: string; loader: string; ui: string; bu
   // `--no-undefined`: a function this Android does not have fails here, not when the phone loads the library.
   run([clang, "-shared", "-Wl,--no-undefined", "-Wl,--gc-sections", "-Wl,-soname,libtokyo-engine.so", "-u", "ANativeActivity_onCreate", "-o", engine,
     ...own, ...guest, libraries[0], libraries[1], "-landroid", "-llog", "-lEGL", "-lGLESv3", "-ldl", "-lm"]);
-  run([clang, "-shared", "-Wl,--no-undefined", "-Wl,-soname,libtokyo.so", "-o", loader, compile(join(root, "android/src/loader.c"), ["-Wall", "-Wextra", "-Werror"]), "-landroid", "-llog", "-ldl"]);
+  run([clang, "-shared", "-Wl,--no-undefined", "-Wl,-soname,libtokyo.so", "-o", loader, compile(join(root, "android/src/loader.c"), ["-Wall", "-Wextra", "-Werror", ...door]), "-landroid", "-llog", "-ldl"]);
   for (const library of [engine, loader]) run([join(llvm, "llvm-strip"), "--strip-unneeded", library]);
   console.log(JSON.stringify({ build, engine: statSync(engine).size, loader: statSync(loader).size, interface: `${logicalW}×${logicalH} @${ui.inputs.viewport.rasterDensity}x` }));
   return { engine, loader, ui: ui.directory, build };
+}
+
+/**
+ * What a package is signed with. A release: the Pocket Nexus Android release key, one key for every Pocket Nexus
+ * package, kept outside every repository. apksigner reads the password from its file, so it is in no command
+ * line and no log.
+ */
+function signer(): string[] {
+  if (!release) return ["--ks", signingKey(), "--ks-pass", "pass:android", "--key-pass", "pass:android", "--ks-key-alias", "pocketjs"];
+  const key = process.env.POCKET_NEXUS_ANDROID_KEY || join(homedir(), ".config/pocket-nexus/signing/pocket-nexus-android-release.p12");
+  const password = key.replace(/\.[^./]*$/, "") + ".password";
+  for (const file of [key, password])
+    if (!existsSync(file)) throw new Error(`a release is signed with the Pocket Nexus Android release key, and ${file} is not there (POCKET_NEXUS_ANDROID_KEY names the keystore; its password is the first line of the .password file beside it)`);
+  return ["--ks", key, "--ks-type", "PKCS12", "--ks-pass", `file:${password}`, "--ks-key-alias", "pocket-nexus"];
 }
 
 function signingKey(): string {
@@ -248,6 +276,8 @@ function signingKey(): string {
 
 async function packageApk() {
   if (!existsSync(pack)) throw new Error("the city is not cooked for this phone: bun tools/android.ts cook");
+  // Before the build: a release without its key stops here.
+  const key = signer();
   const built = await build();
   const staging = join(out, "apk");
   const res = join(staging, "res"), assets = join(staging, "assets");
@@ -262,7 +292,7 @@ async function packageApk() {
   for (const file of ["tokyo.js", "tokyo.pak"]) cpSync(join(built.ui, file), join(assets, file));
   cpSync(pack, join(assets, "city.pack"));
   const manifest = join(staging, "AndroidManifest.xml");
-  writeFileSync(manifest, readFileSync(join(root, "android/AndroidManifest.xml"), "utf8").replace("@VERSION_CODE@", String(version.code)).replace("@VERSION_NAME@", version.name));
+  writeFileSync(manifest, readFileSync(join(root, "android/AndroidManifest.xml"), "utf8").replace("@VERSION_CODE@", String(version.code)).replace("@VERSION_NAME@", version.name).replace("@DEBUGGABLE@", String(!release)));
   const unsigned = join(out, "unsigned.apk"), aligned = join(out, "aligned.apk");
   // `-0 pack`: the pack is stored as it is, so the app reads it in place through a file descriptor.
   // `--no-crunch`: the icons go in as PocketJS's files are, byte for byte.
@@ -275,13 +305,13 @@ async function packageApk() {
   run([join(buildTools, "zipalign"), "-f", "4", unsigned, aligned]);
   mkdirSync(join(root, "dist/android"), { recursive: true });
   cpSync(aligned, apk);
-  run([join(buildTools, "apksigner"), "sign", "--ks", signingKey(), "--ks-pass", "pass:android", "--key-pass", "pass:android", "--ks-key-alias", "pocketjs", "--min-sdk-version", String(TOOLCHAIN.api),
-    "--v4-signing-enabled", "false", apk]);
+  run([join(buildTools, "apksigner"), "sign", ...key, "--min-sdk-version", String(TOOLCHAIN.api), "--v4-signing-enabled", "false", apk]);
   const badging = run([join(buildTools, "aapt"), "dump", "badging", apk]);
   for (const mark of [`package: name='${id}'`, `sdkVersion:'${TOOLCHAIN.api}'`, "native-code: 'armeabi-v7a'", "uses-gl-es: '0x30000'"])
     if (!badging.includes(mark)) throw new Error(`the package is missing ${mark}`);
-  const receipt = { apk: { path: "dist/android/PocketTokyo.apk", bytes: statSync(apk).size, sha256: sha(apk) }, build: built.build, pack: { bytes: statSync(pack).size, sha256: sha(pack) }, package: id, version };
-  writeFileSync(join(root, "dist/android/receipt.json"), JSON.stringify(receipt, null, 2) + "\n");
+  if (badging.includes("application-debuggable") === release) throw new Error(release ? "the release package is debuggable" : "the development package is not debuggable");
+  const receipt = { apk: { path: apk.slice(root.length + 1), bytes: statSync(apk).size, sha256: sha(apk) }, release, build: built.build, pack: { bytes: statSync(pack).size, sha256: sha(pack) }, package: id, version };
+  writeFileSync(join(root, "dist/android", release ? "receipt-release.json" : "receipt.json"), JSON.stringify(receipt, null, 2) + "\n");
   console.log(JSON.stringify(receipt));
 }
 
@@ -343,6 +373,14 @@ switch (command) {
   case "install":
     if (!args.includes("--no-build")) await packageApk();
     await install(apk);
+    if (release) {
+      // A release keeps its data to itself: it is started, and the system says whether it holds the screen.
+      shell(`am start -n ${id}/android.app.NativeActivity`);
+      await Bun.sleep(8000);
+      if (!new RegExp(`mCurrentFocus=.*${id}/`).test(shell("dumpsys window windows"))) throw new Error("the release did not take the screen");
+      console.log(`installed ${id} (release), started`);
+      break;
+    }
     // A development copy left in the app's data would hide what was just installed.
     inApp("rm -rf files/dev");
     console.log(`installed ${id}`);
