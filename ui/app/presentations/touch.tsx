@@ -210,7 +210,7 @@ function Controls(props: { flight: Flight }) {
       if (c.fdx || c.fdy) host.send({ type: "look", dx: c.fdx, dy: c.fdy });
     },
   });
-  const [hint, showHint] = createPulse(7);
+  const [hint, showHint] = createPulse(host, 7);
   createEffect(on(host.mode, (mode, before) => mode === "flight" && before === "title" && showHint()));
   // The day as a bar, under the clock while the clock was tapped.
   const [timing, setTiming] = createSignal(false);

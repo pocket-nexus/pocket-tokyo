@@ -13,7 +13,7 @@ const touch = device === "ipod", dual = device === "3ds";
 /** The commands since the last call, without the touch panel's streams. */
 let read = 0;
 const asked = (): Command[] => {
-  const all = mock.log.slice(read).filter((command) => command.type !== "drive" && command.type !== "look" && command.type !== "idle");
+  const all = mock.log.slice(read).filter((command) => !["drive", "look", "idle", "wake"].includes(command.type));
   read = mock.log.length;
   return all;
 };
@@ -52,15 +52,23 @@ else choose(0);
 rig.step(4);
 assert.deepEqual(asked(), [{ type: "start", tour: true }]);
 assert.equal(mock.state.mode, "flight");
-// The hint is a timer pending; once it has left, nothing is scheduled.
+// The hint fades in, stands with nothing scheduled (the renderer counts its seconds), and fades out.
 assert.equal(mock.idle, false);
-rig.step(460);
+rig.step(60);
+assert.equal(mock.idle, true);
+assert.equal(mock.state.woke, 0);
+rig.step(360);
+assert.notEqual(mock.state.woke, 0);
+assert.equal(mock.idle, false);
+rig.step(60);
 assert.equal(mock.idle, true);
 // The eye changing hands is said for a moment.
 mock.state.tour = false;
 rig.step(2);
 assert.equal(mock.idle, false);
-rig.step(160);
+rig.step(60);
+assert.equal(mock.idle, true);
+rig.step(120);
 assert.equal(mock.idle, true);
 
 if (touch) {

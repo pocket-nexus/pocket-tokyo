@@ -95,4 +95,4 @@ await save("controls");
 const sheet = join(out, `sheet-${device}.png`);
 Bun.spawnSync(["magick", "montage", ...names, "-tile", "4x", "-geometry", `${device === "vita" ? "50%x50%+4+4" : "+4+4"}`, "-background", "#333333", sheet]);
 console.log(sheet);
-console.log(JSON.stringify(rig.mock.log.filter((command) => command.type !== "drive" && command.type !== "look" && command.type !== "idle")));
+console.log(JSON.stringify(rig.mock.log.filter((command) => !["drive", "look", "idle", "wake"].includes(command.type))));

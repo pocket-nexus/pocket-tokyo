@@ -18,7 +18,7 @@ export class Mock {
   state: HostState = {
     mode: "title", message: "", tour: true,
     options: [{ key: "flow", value: 1, choices: ["Stopped", "Slow", "Fast"] }, { key: "invert", value: 0 }, { key: "stats", value: 0 }],
-    stats: "", prefs: "", t: [930, 420, 216, 318, 900, 1000],
+    stats: "", prefs: "", woke: 0, t: [930, 420, 216, 318, 900, 1000],
   };
   /** Every command received, oldest first. */
   log: Command[] = [];
@@ -26,7 +26,17 @@ export class Mock {
   /** The interface said it has nothing scheduled. */
   idle = false;
   looked = { dx: 0, dy: 0 };
+  /** Seconds this renderer has run, and what the interface asked to be woken for. */
+  private seconds = 0;
+  private wakes: { id: number; due: number }[] = [];
   private sent: Partial<HostState> = {};
+
+  /** One frame of the renderer's clock: a wake that is due is said back. */
+  tick(dt: number) {
+    this.seconds += dt;
+    const at = this.wakes.findIndex((wake) => wake.due <= this.seconds);
+    if (at >= 0) this.state.woke = this.wakes.splice(at, 1)[0].id;
+  }
 
   receive(command: Command) {
     this.log.push(command);
@@ -50,6 +60,7 @@ export class Mock {
       case "look": this.looked = { dx: this.looked.dx + command.dx, dy: this.looked.dy + command.dy }; break;
       case "prefs": s.prefs = command.value; break;
       case "idle": this.idle = command.on; break;
+      case "wake": this.wakes.push({ id: command.id, due: this.seconds + command.seconds }); break;
     }
   }
 
@@ -112,6 +123,7 @@ export async function boot(device: Device): Promise<Rig> {
   const ops = wasm.ops as any;
   const facts = createTouchHitFacts((x, y) => (view.aux ? ops.hitTestBoundsAuxiliary(x, y) : ops.hitTestBounds(x, y)));
   const frame = (buttons: number, touch: { x: number; y: number; id?: number }[]) => {
+    mock.tick(1 / 60);
     const packed = touch.map((t) => __packTouch(t.id ?? 1, t.x, t.y));
     const surface = view.aux ? 1 : 0;
     globals.frame(buttons, undefined, packed, facts(packed), packed.map(() => surface));

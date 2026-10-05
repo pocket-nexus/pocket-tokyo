@@ -59,7 +59,7 @@ function TitleTop(props: { flight: Flight }) {
 
 function InstrumentsTop(props: { flight: Flight }) {
   const host = props.flight.host;
-  const [hint, showHint] = createPulse(7);
+  const [hint, showHint] = createPulse(host, 7);
   createEffect(on(host.mode, (mode, before) => mode === "flight" && before === "title" && showHint()));
   return (
     <View class="relative" style={{ width: TOP.w, height: TOP.h }}>

@@ -30,6 +30,8 @@ export interface HostState {
   stats: string;
   /** What the interface last stored with `prefs`. */
   prefs: string;
+  /** The `wake` the interface asked for that last came due; 0 before any has. */
+  woke: number;
   /** The numbers that change in flight, at most once a turn (see `T`). */
   t: number[];
 }
@@ -70,8 +72,12 @@ export type Command =
   /** A finger turning the view: logical px since the last command. */
   | { type: "look"; dx: number; dy: number }
   | { type: "prefs"; value: string }
-  /** The interface has nothing scheduled (no hint fading). A turn of the
+  /** The interface has nothing scheduled (nothing fading). A turn of the
    *  guest costs milliseconds on the slower machines, so while this is on
    *  the renderer turns it only when it has news or a button the interface
    *  listens to changes. */
-  | { type: "idle"; on: boolean };
+  | { type: "idle"; on: boolean }
+  /** Say `id` back in `HostState.woke` in this many seconds. The interface's
+   *  own timers count its turns, and an idle guest takes none: what must
+   *  happen later (a hint leaving) is timed by the renderer. */
+  | { type: "wake"; id: number; seconds: number };

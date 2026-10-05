@@ -110,6 +110,8 @@ pub struct State {
     pub stats: String,
     /// What the interface last stored with `prefs`.
     pub prefs: String,
+    /// The `wake` the interface asked for that last came due; 0 before any has.
+    pub woke: u32,
     pub t: Telemetry,
 }
 
@@ -168,6 +170,7 @@ impl State {
         });
         member!(stats, "stats", |s: &mut String| escape(s, &self.stats));
         member!(prefs, "prefs", |s: &mut String| escape(s, &self.prefs));
+        member!(woke, "woke", |s: &mut String| { let _ = write!(s, "{}", self.woke); });
         member!(t, "t", |s: &mut String| {
             let t = &self.t;
             let _ = write!(s, "[{},{},{},{},{},{}]", t.minutes, t.altitude, t.speed, t.heading, t.x, t.z);
@@ -201,9 +204,12 @@ pub enum Command {
     Look { dx: f32, dy: f32 },
     /// To store, and to hand back in [`State::prefs`].
     Prefs(String),
-    /// The interface has nothing scheduled (no hint fading): a turn is worth its cost only when
+    /// The interface has nothing scheduled (nothing fading): a turn is worth its cost only when
     /// the renderer has news for it or a button it listens to changes.
     Idle(bool),
+    /// Say `id` back in [`State::woke`] in this many seconds. The interface's own timers count its
+    /// turns, and an idle guest takes none: what must happen later (a hint leaving) is timed here.
+    Wake { id: u32, seconds: f32 },
 }
 
 /// The value after `"key":` in a flat JSON object. Quoted text is skipped
@@ -270,6 +276,7 @@ impl Command {
             "look" => Command::Look { dx: n("dx"), dy: n("dy") },
             "prefs" => Command::Prefs(text(line, "value")?),
             "idle" => Command::Idle(flag(line, "on")),
+            "wake" => Command::Wake { id: n("id").max(0.0) as u32, seconds: n("seconds") },
             _ => return None,
         })
     }
@@ -328,8 +335,8 @@ impl Interface {
     /// line): text swapped in place, with nothing set moving.
     pub fn only_readouts(&self) -> bool {
         let Some(sent) = &self.sent else { return false };
-        let State { mode, message, tour, options, prefs, stats: _, t: _ } = &self.state;
-        *mode == sent.mode && *message == sent.message && *tour == sent.tour && *options == sent.options && *prefs == sent.prefs
+        let State { mode, message, tour, options, prefs, woke, stats: _, t: _ } = &self.state;
+        *mode == sent.mode && *message == sent.message && *tour == sent.tour && *options == sent.options && *prefs == sent.prefs && *woke == sent.woke
     }
 
     /// A line from the guest.
@@ -380,6 +387,7 @@ mod tests {
         assert_eq!(parse(r#"{"type":"look","dx":-3.5,"dy":12}"#), Command::Look { dx: -3.5, dy: 12.0 });
         assert_eq!(parse(r#"{"type":"prefs","value":"{\"flow\":1}"}"#), Command::Prefs(r#"{"flow":1}"#.into()));
         assert_eq!(parse(r#"{"type":"idle","on":true}"#), Command::Idle(true));
+        assert_eq!(parse(r#"{"type":"wake","id":4,"seconds":7}"#), Command::Wake { id: 4, seconds: 7.0 });
         assert_eq!(Command::parse(r#"{"type":"pocket.overlay.control","name":"x","node":3}"#), None);
         // A value that looks like a key is not one.
         assert_eq!(parse(r#"{"type":"prefs","value":"\"type\":\"title\""}"#), Command::Prefs(r#""type":"title""#.into()));
@@ -396,7 +404,7 @@ mod tests {
         interface.state.options = vec![Setting::switch("stats", false), Setting::choice("flow", 1, &["Stopped", "Slow", "Fast"])];
         assert_eq!(
             interface.poll().unwrap(),
-            "{\"type\":\"state\",\"value\":{\"mode\":\"title\",\"message\":\"\",\"tour\":true,\"options\":[{\"key\":\"stats\",\"value\":0},{\"key\":\"flow\",\"value\":1,\"choices\":[\"Stopped\",\"Slow\",\"Fast\"]}],\"stats\":\"\",\"prefs\":\"\",\"t\":[0,0,0,0,0,0]}}\n"
+            "{\"type\":\"state\",\"value\":{\"mode\":\"title\",\"message\":\"\",\"tour\":true,\"options\":[{\"key\":\"stats\",\"value\":0},{\"key\":\"flow\",\"value\":1,\"choices\":[\"Stopped\",\"Slow\",\"Fast\"]}],\"stats\":\"\",\"prefs\":\"\",\"woke\":0,\"t\":[0,0,0,0,0,0]}}\n"
         );
         assert_eq!(interface.poll(), None);
         // A turn in flight: only the numbers go out.

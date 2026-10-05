@@ -65,6 +65,10 @@ pub struct Session {
     speed: f32,
     /// The settings as last listed for the interface.
     listed: Option<(bool, usize, bool, bool)>,
+    /// Seconds this flow has run, and what the interface asked to be woken for: an id and the second
+    /// it is due.
+    seconds: f32,
+    wakes: Vec<(u32, f32)>,
 }
 
 impl Default for Session {
@@ -90,6 +94,8 @@ impl Session {
             last_eye: None,
             speed: 0.0,
             listed: None,
+            seconds: 0.0,
+            wakes: Vec::new(),
         }
     }
 
@@ -147,6 +153,11 @@ impl Session {
                 self.look.1 += dy * LOOK;
             }
             Command::Idle(on) => self.idle = on,
+            Command::Wake { id, seconds } => {
+                if self.wakes.len() < 16 {
+                    self.wakes.push((id, self.seconds + max(seconds, 0.0)));
+                }
+            }
             other => return Some(other),
         }
         None
@@ -205,6 +216,7 @@ impl Session {
         let pressed = pad.buttons & !self.prev_buttons;
         self.prev_buttons = pad.buttons;
         self.frames = self.frames.wrapping_add(1);
+        self.seconds += dt;
         // No interface on the screen: the city has it, and the menu button hands the eye to the
         // tour and takes it back.
         if !unsafe { channel() }.is_open() && self.frames > 30 {
@@ -251,6 +263,10 @@ impl Session {
             self.listed = Some(listed);
             state.options.clear();
             self.settings(flight, &mut state.options);
+        }
+        // One wake a frame: each is a line of its own, so the interface hears every id.
+        if let Some(at) = self.wakes.iter().position(|w| w.1 <= self.seconds) {
+            state.woke = self.wakes.swap_remove(at).0;
         }
         if self.frames % self.numbers_every.max(1) != 0 {
             return;
@@ -389,6 +405,24 @@ mod tests {
         session.command(&mut f, Command::Menu(true));
         assert_eq!(session.input(&Pad::default(), dt).0.buttons, 0);
         session.command(&mut f, Command::Menu(false));
+
+        // What the interface asked to be woken for comes due on this side's clock, one id a frame.
+        session.command(&mut f, Command::Wake { id: 7, seconds: 0.5 });
+        session.command(&mut f, Command::Wake { id: 8, seconds: 0.5 });
+        for _ in 0..14 {
+            session.run(&mut f, &Pad::default(), dt, flat);
+            session.publish(&f, &mut state);
+        }
+        assert_eq!(state.woke, 0);
+        let mut heard = vec![];
+        for _ in 0..4 {
+            session.run(&mut f, &Pad::default(), dt, flat);
+            session.publish(&f, &mut state);
+            heard.push(state.woke);
+        }
+        heard.retain(|&id| id != 0);
+        heard.dedup();
+        assert_eq!(heard, [7, 8]);
 
         // The numbers in flight.
         f.control("fly=120,300,-40,120,300,-1000");
