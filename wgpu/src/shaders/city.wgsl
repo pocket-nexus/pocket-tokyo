@@ -23,7 +23,8 @@ struct Frame {
   top: vec4<f32>,
   // Walls. x, y: texture coordinates per unit; z: 1 / 255; w: how far the night has come
   wall: vec4<f32>,
-  // Painted geometry. z: 1 / 255; w: how far a lamp shines by itself, at the half scale light travels at
+  // Painted geometry. z: 1 / 255; w: how far the night has come for what shines by itself, at the half scale
+  // light travels at
   solid: vec4<f32>,
   // The light on a wall that looks to each sector, and last on painted faces that look up or down.
   lights: array<vec4<f32>, 17>,
@@ -147,14 +148,14 @@ struct SolidOut {
   @location(1) haze: f32,
 }
 
-// (alpha 255 marks a lamp: it shines by its own colour once the night has come)
+// (alpha: how far the face shines by its own colour once the night has come: a lamp whole, a landmark's
+// steel as far as its floodlights light it)
 @vertex
 fn solid_vertex(@location(0) at: vec4<i32>, @location(1) ao: vec4<u32>, @location(2) colour: vec4<u32>) -> SolidOut {
   var out: SolidOut;
   let s = frame.solid;
   out.position = place.mvp * vec4<f32>(vec3<f32>(at.xyz), 1.0);
-  let lamp = step(254.5, f32(colour.a));
-  out.light = vec3<f32>(colour.rgb) * (frame.lights[min(ao.w, 16u)].rgb * (f32(ao.z) * s.z * s.z) + lamp * s.w * s.z);
+  out.light = vec3<f32>(colour.rgb) * (frame.lights[min(ao.w, 16u)].rgb * (f32(ao.z) * s.z * s.z) + f32(colour.a) * (s.w * s.z * s.z));
   out.haze = haze_at(out.position.w);
   return out;
 }

@@ -512,7 +512,7 @@ impl Renderer {
             top: [view.top[0], view.top[1], view.top[2], 1.0 / 255.0],
             // (FACADE_V repeats of the picture up a wall over the signed range)
             wall: [1.0 / 32767.0, tokyo_pack::FACADE_V / 32767.0, 1.0 / 255.0, night],
-            // (w: how far a lamp shines by itself, at the half scale light travels at)
+            // (w: how far the night has come for what shines by itself, at the half scale light travels at)
             solid: [0.0, 0.0, 1.0 / 255.0, 0.5 * night],
             lights: view.lights.map(|l| [l[0], l[1], l[2], 0.0]),
         };
