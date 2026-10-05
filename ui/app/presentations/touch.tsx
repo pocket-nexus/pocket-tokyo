@@ -2,21 +2,29 @@
 // is a control under a thumb. During a flight a stick stands in the lower
 // left to fly, the keys in the lower right climb, descend and speed up, and
 // a finger anywhere else turns the view. The clock opens the day as a bar to
-// drag. Lists are buttons a finger presses.
+// drag. The title and the lists stand where the PSP's do, with rows a finger
+// presses: beside another device this one shows the same screen.
 import { createEffect, createSignal, For, on, Show, type JSX } from "solid-js";
 import { Text, View } from "@pocketjs/framework/components";
 import { createGesture } from "@pocketjs/framework/gesture";
 import { onFrame } from "@pocketjs/framework/lifecycle";
 import type { NodeMirror } from "@pocketjs/framework/renderer";
-import { clock, createFlight, createPulse, HOURS, type Flight } from "../flight.ts";
+import { createFlight, createPulse, HOURS, type Flight, type Row } from "../flight.ts";
+import { AREA } from "../generated/area.ts";
 import { connectHost, type Host } from "../host.ts";
-import { AreaMap, Button, Chip, Clock, Compass, createMenu, Fade, Heading, Keep, Loading, type Menu, Note, Panel, Place, Readout, Rows, Stats, TimeBar, Touchable, Wordmark } from "../parts.tsx";
+import { AreaMap, Button, Chip, Clock, Compass, createMenu, Face, Fade, Heading, Keep, Legend, Loading, Mark, type Menu, Note, Panel, Place, Readout, Rows, Stats, TimeBar, Touchable, Wordmark } from "../parts.tsx";
 import { FLY } from "../protocol.ts";
-import { DIM, GLASS, HAIRLINE, INK, NIGHT, tint, TOWER } from "../theme.ts";
+import { DIM, GLASS, HAIRLINE, INK, NIGHT, tint, TOWER, WASH } from "../theme.ts";
 
 const W = 480, H = 320;
+const FOOTER = 24;
 /** A fingertip on this panel (Pocket HIG, touch modality). */
 const TARGET = 44;
+/** A row of the title's own list: its five rows stand between the name and the strip.
+ *  iOS's own bars are 32 points tall on this panel held sideways. */
+const TITLE_ROW = 36;
+/** A list's panel, between the top of the screen and the strip. */
+const SHEET = 280;
 
 export default function TouchScreen() {
   const host = connectHost();
@@ -29,37 +37,51 @@ export default function TouchScreen() {
       {/* The controls stay built under the menu: opening it and closing it build nothing. */}
       <Keep when={host.mode() === "flight"} eager width={W} height={H}><Controls flight={flight} /></Keep>
       <Keep when={host.mode() === "menu"} eager width={W} height={H}><Over flight={flight} menu={menu} /></Keep>
+      {/* The strip stays built and is shown with a list. It names no button: this device has none. */}
+      <View class="absolute" style={{ insetL: 0, insetB: 0, display: flight.listing() ? 0 : 1 }}>
+        <Legend width={W} left={flight.mode() === "title" ? `${AREA.name}, ${AREA.district}` : flight.place()} legend="" />
+      </View>
     </View>
   );
 }
 
-/** The hours as keys and the day as a bar, for a list a finger works. `left`: the bar's left edge on the panel. */
+/** A row that stands by itself, outside a list: marked while a finger is on it, as a list marks its own. */
+function Cell(props: { row: Row; width: number }) {
+  const [held, setHeld] = createSignal(false);
+  return (
+    <Touchable class="relative" style={{ width: props.width, height: TARGET }} onTap={props.row.press} onHeld={setHeld}>
+      <View class="absolute" style={{ insetL: 0, insetT: 0, width: props.width, height: TARGET, display: held() ? 0 : 1, bgColor: WASH }}>
+        <Mark height={TARGET} />
+      </View>
+      <Face row={props.row} width={props.width} height={TARGET} />
+    </Touchable>
+  );
+}
+
+/**
+ * The hours for a finger: the day as a bar to drag, then the list's own
+ * rows. The hours stand two abreast, so that each is a fingertip tall and
+ * the list fits its panel; the clock's own setting takes the width.
+ * `left`: the bar's left edge on the panel.
+ */
 function Hours(props: { flight: Flight; width: number; left: number }) {
-  const host = props.flight.host;
-  const key = (props.width - 28 - 16) / 3;
   return (
     <View class="flex-col" style={{ width: props.width }}>
-      <View style={{ paddingT: 8 }}><TimeBar flight={props.flight} width={props.width} left={props.left} /></View>
-      <View class="flex-row flex-wrap gap-2" style={{ paddingL: 14, paddingT: 6, width: props.width }}>
-        <For each={HOURS}>
-          {([label, minutes]) => <Button label={`${label} ${clock(minutes)}`} width={key} height={40} onPress={() => host.send({ type: "hour", minutes })} />}
-        </For>
+      <View class="relative" style={{ width: props.width, height: TARGET }}>
+        <View class="absolute" style={{ insetL: 0, insetT: 4 }}><TimeBar flight={props.flight} width={props.width} left={props.left} /></View>
+        <View class="absolute" style={{ insetL: 0, insetB: 0, width: props.width, height: 1, bgColor: HAIRLINE }} />
       </View>
-      <Show when={props.flight.flow()}>
-        {(flow) => (
-          <View class="flex-row items-center gap-2" style={{ paddingL: 14, paddingT: 10 }}>
-            <Text class="text-xs font-bold tracking-wide" style={{ width: 56, textColor: DIM }}>CLOCK</Text>
-            <For each={flow().choices ?? []}>
-              {(choice, index) => <Button label={choice} width={(props.width - 28 - 56 - 24) / 3} height={36} strong={flow().value === index()} onPress={() => props.flight.set(flow(), index())} />}
-            </For>
-          </View>
-        )}
-      </Show>
+      <View class="relative flex-row flex-wrap" style={{ width: props.width }}>
+        <For each={props.flight.hours()}>
+          {(row, index) => <Cell row={row} width={index() < HOURS.length ? props.width / 2 : props.width} />}
+        </For>
+        <View class="absolute" style={{ insetL: props.width / 2, insetT: 0, width: 1, height: (HOURS.length / 2) * TARGET, bgColor: HAIRLINE }} />
+      </View>
     </View>
   );
 }
 
-/** The list that is up: its heading with the way back, and its rows; the hours are keys. */
+/** The list that is up: its heading with the way back, and its rows; the hours stand under the day's bar. */
 function Sheet(props: { flight: Flight; menu: Menu; width: number; left: number; active: () => boolean; children?: JSX.Element }) {
   const flight = props.flight;
   return (
@@ -75,27 +97,22 @@ function Sheet(props: { flight: Flight; menu: Menu; width: number; left: number;
 
 function Title(props: { flight: Flight; menu: Menu }) {
   const flight = props.flight;
-  const host = flight.host;
   return (
     <View class="relative w-full h-full">
-      <View class="absolute bg-gradient-to-r from-[#000000c0] to-[#00000000]" style={{ insetL: 0, insetT: 0, width: 340, height: H }} />
-      <View class="absolute" style={{ insetL: 28, insetT: 26 }}><Wordmark large /></View>
-      <Text class="absolute text-xs" style={{ insetL: 28, insetT: 92, textColor: DIM }}>A flight over Shiba, around Tokyo Tower.</Text>
-      <View class="absolute" style={{ insetR: 16, insetT: 14 }}><Clock host={host} /></View>
-      <Show
-        when={flight.sheet() === "menu"}
-        fallback={<Panel width={W} height={H} panelWidth={380} panelHeight={296}><Sheet flight={flight} menu={props.menu} width={380} left={(W - 380) / 2} active={() => flight.mode() === "title"} /></Panel>}
-      >
-        <View class="absolute flex-col gap-2" style={{ insetL: 28, insetT: 124 }}>
-          <Button label="Take the tour" width={212} height={TARGET} strong onPress={() => host.send({ type: "start", tour: true })} />
-          <Button label="Fly yourself" width={212} height={TARGET} onPress={() => host.send({ type: "start", tour: false })} />
-        </View>
-        <View class="absolute flex-row gap-2" style={{ insetL: 28, insetB: 20 }}>
-          <Button label="Time of day" width={104} height={40} onPress={() => flight.open("time")} />
-          <Button label="Settings" width={88} height={40} onPress={() => flight.open("settings")} />
-          <Button label="About" width={72} height={40} onPress={() => flight.open("about")} />
-        </View>
-      </Show>
+      <View class="absolute bg-gradient-to-r from-[#000000c0] to-[#00000000]" style={{ insetL: 0, insetT: 0, width: 320, height: H }} />
+      <View class="absolute" style={{ insetL: 24, insetT: 22 }}><Wordmark large /></View>
+      <Text class="absolute text-xs" style={{ insetL: 24, insetT: 88, textColor: DIM }}>A flight over Shiba, around Tokyo Tower.</Text>
+      <View class="absolute" style={{ insetR: 16, insetT: 12 }}><Clock host={flight.host} /></View>
+      {/* The title's own rows, and the panel a list opened from them comes up in. Both stay built:
+          the rows from the start, the panel from the first time it is shown. */}
+      <View class="absolute" style={{ insetL: 10, insetT: 110, display: flight.sheet() === "menu" ? 0 : 1 }}>
+        <Rows flight={flight} menu={props.menu} width={212} rowHeight={TITLE_ROW} active={() => flight.mode() === "title" && flight.sheet() === "menu"} warm={[flight.lists.title]} />
+      </View>
+      <Keep when={flight.sheet() !== "menu"} width={W} height={H - FOOTER}>
+        <Panel width={W} height={H - FOOTER} panelWidth={380} panelHeight={SHEET}>
+          <Sheet flight={flight} menu={props.menu} width={380} left={(W - 380) / 2} active={() => flight.mode() === "title" && flight.sheet() !== "menu"} />
+        </Panel>
+      </Keep>
     </View>
   );
 }
@@ -107,10 +124,9 @@ function Over(props: { flight: Flight; menu: Menu }) {
   const side = MAP + 20, panel = 460;
   const wide = () => props.flight.sheet() === "time";
   return (
-    <Panel width={W} height={H} panelWidth={panel} panelHeight={296}>
-      <View class="items-center justify-center flex-col gap-3" style={{ width: side, height: 296, display: wide() ? 1 : 0 }}>
+    <Panel width={W} height={H - FOOTER} panelWidth={panel} panelHeight={SHEET}>
+      <View class="items-center justify-center" style={{ width: side, height: SHEET, display: wide() ? 1 : 0 }}>
         <AreaMap host={props.flight.host} width={MAP} />
-        <Text class="text-sm font-bold" style={{ textColor: INK }}>{props.flight.place()}</Text>
       </View>
       <Show when={wide()} fallback={<Sheet flight={props.flight} menu={props.menu} width={panel - side} left={(W - panel) / 2 + side} active={() => props.flight.mode() === "menu"} />}>
         <Sheet flight={props.flight} menu={props.menu} width={panel} left={(W - panel) / 2} active={() => props.flight.mode() === "menu"} />
