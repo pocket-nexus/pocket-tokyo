@@ -90,7 +90,7 @@ function FlightLow(props: { flight: Flight }) {
         <Button label="Menu" width={SIDE - 9} height={38} surface="auxiliary" onPress={props.flight.menu} />
         <Button label="Tour" width={SIDE - 9} height={38} strong={host.tour()} surface="auxiliary" onPress={() => host.send({ type: "tour", on: !host.tour() })} />
       </View>
-      <View class="absolute" style={{ insetL: MAP + 2, insetB: 44 }}><Clock host={host} compact /></View>
+      <View class="absolute" style={{ insetL: MAP + 7, insetB: 46 }}><Clock host={host} compact /></View>
       <View class="absolute" style={{ insetL: 0, insetB: 36, width: LOW.w, height: 1, bgColor: HAIRLINE }} />
       <View class="absolute" style={{ insetL: 0, insetB: 0 }}><TimeBar flight={props.flight} width={LOW.w} left={0} surface="auxiliary" /></View>
     </View>

@@ -5,19 +5,25 @@
  * a second, the PICA200's vertex programs and fixed combiners, one Circle Pad.
  * What moves and what a frame draws is the Rust core (core/).
  *
- * Controls: the Circle Pad flies (ahead and back, turning left and right),
- * X and B look up and down, L and R go down and up, Y flies faster. Left and
- * right on the +Control Pad turn the clock; up and down set how fast it runs.
- * START returns to the tour. L + R + START leaves.
+ * Every 2D pixel is the interface's: the PocketJS guest of ui/ (guest.c), over
+ * the city on the upper screen and alone on the lower one, where it shows the
+ * area from above, the clock as a bar a stylus turns, and the lists.
+ *
+ * Controls in flight: the Circle Pad flies (ahead and back, turning left and
+ * right), X and B look up and down, L and R go down and up, Y flies faster.
+ * Left and right on the +Control Pad turn the clock, SELECT hands the eye to
+ * the tour and takes it back. START and the touch screen are the interface's.
+ * L + R + START leaves.
  *
  * Development loop over PocketJS's paired LAN wire (port 8131, compiled in
  * from vendor/pocketjs/hosts/3ds): {"t":"tokyo.control","text":"..."} steers
  * the run and is answered with a tokyo.status record; "screenshot" captures
  * both screens; a .3dsx install replaces this program. In an emulator,
  * sdmc:/pocket-tokyo/boot.txt holds control words, plus shot=N (write frame N
- * to shot.bgr there) and exit=N. */
+ * of both screens to shot.bgr and shot-low.bgr there) and exit=N. */
 #include <3ds.h>
 #include <citro3d.h>
+#include <malloc.h>
 #include <math.h>
 #include <pocket3d_title.h>
 #include <stdio.h>
@@ -27,12 +33,16 @@
 
 #include "core.h"
 #include "devserver.h"
+#include "gfx.h"
+#include "guest.h"
 #include "hbldr.h"
 #include "native.h"
 #include "render.h"
 #include "soc.h"
 
-unsigned int __stacksize__ = 256 * 1024;
+/* QuickJS recurses: the guest compiles its bundle and mounts its screens on this thread, and PocketJS sets
+ * the script's own limit for a megabyte of stack. */
+unsigned int __stacksize__ = 1024 * 1024;
 extern int __system_argc;
 extern char **__system_argv;
 
@@ -43,20 +53,65 @@ extern char **__system_argv;
 static const u32 transfer = GX_TRANSFER_FLIP_VERT(0) | GX_TRANSFER_OUT_TILED(0) | GX_TRANSFER_RAW_COPY(0) | GX_TRANSFER_IN_FORMAT(GX_TRANSFER_FMT_RGBA8) | GX_TRANSFER_OUT_FORMAT(GX_TRANSFER_FMT_RGB8) |
                             GX_TRANSFER_SCALING(GX_TRANSFER_SCALE_NO);
 
+/* What the interface asked to have kept between runs. */
+#define PREFS_PATH "sdmc:/3ds/pocket-tokyo/interface.json"
+
 static const char *stage = "boot";
 static char app_error[256];
 static FILE *boot_log;
+static C3D_RenderTarget *top, *bottom;
+/* The lower screen is a text console: the interface did not start. */
+static bool console;
 
-static void flush_console(void) { GSPGPU_FlushDataCache(gfxGetFramebuffer(GFX_BOTTOM, GFX_LEFT, NULL, NULL), 320 * 240 * 2); }
-
+/* A line for the boot log and the dev wire. */
 static void say(const char *message) {
-  printf("%s\n", message);
-  flush_console();
   if (boot_log) {
     fprintf(boot_log, "%s\n", message);
     fflush(boot_log);
   }
   devserver_report_log("info", message);
+}
+
+/* Without the interface an error has no screen of its own: the lower one becomes a console for it. */
+static void console_error(const char *message) {
+  if (!console) {
+    gfxSetDoubleBuffering(GFX_BOTTOM, false);
+    consoleInit(GFX_BOTTOM, NULL);
+    console = true;
+  }
+  printf("%s\n", message);
+  GSPGPU_FlushDataCache(gfxGetFramebuffer(GFX_BOTTOM, GFX_LEFT, NULL, NULL), 320 * 240 * 2);
+}
+
+/* One frame of the interface alone, while there is no city to draw. */
+static void interface_frame(void) {
+  if (!guest_running() || !C3D_FrameBegin(C3D_FRAME_SYNCDRAW))
+    return;
+  guest_prepare();
+  C3D_RenderTargetClear(top, C3D_CLEAR_ALL, 0x000000ff, 0);
+  C3D_FrameDrawOn(top);
+  guest_draw_top();
+  guest_draw_bottom(bottom);
+  C3D_FrameEnd(0);
+}
+
+/* A loading step: the interface shows it before the step, which blocks, begins. */
+static void loading(const char *message) {
+  say(message);
+  tk_stage(TK_STAGE_LOADING, message, strlen(message));
+  /* One turn takes the state in, the next has laid it out. */
+  hidScanInput();
+  guest_turn_now();
+  guest_turn_now();
+  interface_frame();
+}
+
+/* The start failed: `app_error` says why, on the interface or, without one, on the console. */
+static void failed(void) {
+  say(app_error);
+  tk_stage(TK_STAGE_ERROR, app_error, strlen(app_error));
+  if (!guest_running())
+    console_error(app_error);
 }
 
 /* ---------------------------------------------------------------- the pack */
@@ -127,7 +182,7 @@ static bool load(void) {
   static RenderData data;
   static TkPack p;
   u32 size = 0, pictures = 0, lamp_bytes = 0;
-  say("Reading the city");
+  loading("Reading the city");
   p.city = read_section(TAG('C', 'I', 'T', 'Y'), malloc, &size);
   p.regions = read_section(TAG('R', 'E', 'G', 'N'), malloc, &size);
   p.region_count = size / 24;
@@ -152,7 +207,7 @@ static bool load(void) {
     return false;
   }
   p.near_offset = near->offset;
-  say("Reading the levels that stay");
+  loading("Reading the levels that stay");
   data.vtx[0] = read_section(TAG('V', 'T', 'O', 'P'), linear, NULL);
   data.vtx[1] = read_section(TAG('V', 'W', 'A', 'L'), linear, NULL);
   data.vtx[2] = read_section(TAG('V', 'S', 'O', 'L'), linear, NULL);
@@ -162,7 +217,7 @@ static bool load(void) {
     return false;
   }
   GSPGPU_FlushDataCache(data.idx, size);
-  say("Reading the pictures");
+  loading("Reading the pictures");
   data.pictures = read_section(TAG('H', 'P', 'I', 'C'), malloc, &pictures);
   u8 *texels = read_section(TAG('H', 'T', 'E', 'X'), linear, NULL);
   u8 *lamps = read_section(TAG('L', 'A', 'M', 'P'), linear, &lamp_bytes);
@@ -186,10 +241,10 @@ static bool load(void) {
     if (s->size)
       GSPGPU_FlushDataCache(data.vtx[k], s->size);
   }
-  say("Handing the pictures to the GPU");
+  loading("Handing the pictures to the GPU");
   if (!render_init(&data, app_error, sizeof app_error))
     return false;
-  say("Starting the flight");
+  loading("Starting the flight");
   /* The textures hold their own copies now. */
   linearFree(texels);
   linearFree(lamps);
@@ -261,15 +316,35 @@ static void worker(void *arg) {
 
 static TkPerf perf;
 static float cpu_ms, gpu_ms;
+/* The interface: the frame's share of its turns (smoothed), and what starting it took of each memory. */
+static float ui_ms;
+static u32 guest_heap, guest_linear;
 static u32 frame_no;
 static bool new3ds;
 
+/* `text` with what a JSON string cannot hold as it is escaped or blanked. */
+static void escape(char *out, size_t cap, const char *text) {
+  size_t n = 0;
+  for (; *text && n + 2 < cap; text++) {
+    char c = *text;
+    if (c == '"' || c == '\\')
+      out[n++] = '\\';
+    out[n++] = c < ' ' ? ' ' : c;
+  }
+  out[n] = 0;
+}
+
 static int status_text(char *line, size_t cap) {
-  static char body[2048], extra[512];
+  static char body[2048], extra[1024], guest[2 * 192];
+  escape(guest, sizeof guest, guest_error());
+  struct mallinfo heap = mallinfo();
   int n = snprintf(extra, sizeof extra,
-                   "\"build\":\"" TOKYO_BUILD_ID "\",\"phase\":\"%s\",\"error\":\"%s\",\"packBytes\":%lu,\"linearFree\":%lu,\"vramFree\":%lu,\"new3ds\":%s,\"read\":{\"cells\":%lu,\"ms\":%lu},\"shadows\":{\"sweeps\":%lu,\"ms\":%lu}", stage,
-                   app_error, (unsigned long)pack_bytes, (unsigned long)linearSpaceFree(), (unsigned long)vramSpaceFree(), new3ds ? "true" : "false", (unsigned long)cells_read, (unsigned long)read_ms_total, (unsigned long)shadows_swept,
-                   (unsigned long)sweep_ms_last);
+                   "\"build\":\"" TOKYO_BUILD_ID "\",\"phase\":\"%s\",\"error\":\"%s\",\"packBytes\":%lu,\"linearFree\":%lu,\"vramFree\":%lu,\"heap\":{\"used\":%lu,\"size\":%lu},\"new3ds\":%s,\"read\":{\"cells\":%lu,\"ms\":%lu},\"shadows\":{\"sweeps\":%lu,\"ms\":%lu},"
+                   "\"interface\":{\"up\":%s,\"open\":%s,\"error\":\"%s\",\"turns\":%lu,\"lowerDraws\":%lu,\"turnMs\":%.3f,\"scriptMs\":%.3f,\"worstTurnMs\":%.3f,\"cpuMs\":%.3f,\"commands\":%lu,\"vertices\":%lu,\"dropped\":%lu,\"heapBytes\":%lu,\"linearBytes\":%lu}",
+                   stage, app_error, (unsigned long)pack_bytes, (unsigned long)linearSpaceFree(), (unsigned long)vramSpaceFree(), (unsigned long)heap.uordblks, (unsigned long)envGetHeapSize(), new3ds ? "true" : "false",
+                   (unsigned long)cells_read, (unsigned long)read_ms_total, (unsigned long)shadows_swept, (unsigned long)sweep_ms_last, guest_running() ? "true" : "false", tk_interface_open() ? "true" : "false", guest,
+                   (unsigned long)guest_turns(), (unsigned long)guest_lower_draws(), guest_turn_ms(), guest_script_ms(), guest_worst_ms(), ui_ms, (unsigned long)gfx_frame_commands(), (unsigned long)gfx_frame_vertices(), (unsigned long)gfx_dropped_vertices(), (unsigned long)guest_heap,
+                   (unsigned long)guest_linear);
   if (!strcmp(stage, "running")) {
     tk_status(body, sizeof body, &perf, extra, n);
     /* {"target":... becomes {"t":"tokyo.status","target":... */
@@ -279,57 +354,66 @@ static int status_text(char *line, size_t cap) {
 }
 
 static void report_status(void) {
-  static char line[2800];
+  static char line[3400];
   int n = status_text(line, sizeof line);
   devserver_send_ctrl(line, n);
 }
 
-/* The "text" member of a control line: words for the flight, no escapes. */
+/* Control words: the flight's (Flight::control), the flow's (tk_remote: mode=, ui=) and this host's own:
+ *   press=MASK       PocketJS BTN bits, pressed on the interface as a thumb would; 0 rests as long
+ *   touch=X,Y        a stylus held on the lower screen; touch=off lifts it */
+static void words(const char *text, size_t length) {
+  static char copy[1024];
+  snprintf(copy, sizeof copy, "%.*s", (int)length, text);
+  char *save = NULL;
+  for (char *word = strtok_r(copy, " \n", &save); word; word = strtok_r(NULL, " \n", &save)) {
+    int x, y;
+    if (!strncmp(word, "press=", 6))
+      guest_press(strtoul(word + 6, NULL, 0));
+    else if (!strncmp(word, "touch=", 6))
+      guest_touch(sscanf(word + 6, "%d,%d", &x, &y) == 2, x, y);
+  }
+  tk_remote(text, length);
+  if (!strcmp(stage, "running"))
+    tk_control(text, length);
+}
+
+/* The "text" member of a control line, no escapes. */
 static void controls(const char *line) {
   if (!strstr(line, "\"tokyo.control\""))
     return;
   const char *t = strstr(line, "\"text\":\"");
-  if (t && !strcmp(stage, "running")) {
-    t += 8;
-    const char *end = strchr(t, '"');
-    if (end)
-      tk_control(t, end - t);
-  }
+  const char *end = t ? strchr(t + 8, '"') : NULL;
+  if (end)
+    words(t + 8, end - (t + 8));
   report_status();
 }
 
-static bool capture(C3D_RenderTarget *target) {
-  uint8_t *top = NULL, *bottom = NULL;
-  unsigned width = target->frameBuf.height, height = target->frameBuf.width;
-  if (!devserver_screenshot_begin(frame_no, width, height, 320, 240, &top, &bottom))
+/* Both screens, read back from their targets after the GPU finished them. */
+static bool capture(void) {
+  uint8_t *upper = NULL, *lower = NULL;
+  if (!devserver_screenshot_begin(frame_no, 400, 240, 320, 240, &upper, &lower))
     return false;
-  C3D_SyncDisplayTransfer(target->frameBuf.colorBuf, GX_BUFFER_DIM(height, width), (u32 *)top, GX_BUFFER_DIM(height, width), transfer);
-  GSPGPU_InvalidateDataCache(top, width * height * 3);
-  u16 w, h;
-  const uint16_t *fb = (const uint16_t *)gfxGetFramebuffer(GFX_BOTTOM, GFX_LEFT, &w, &h);
-  if (w != 240 || h != 320) {
-    devserver_screenshot_cancel();
-    return false;
-  }
-  /* The console is RGB565; the wire carries BGR8 for both screens. */
-  for (unsigned i = 0; i < 320 * 240; i++) {
-    unsigned p = fb[i];
-    bottom[3 * i] = (p & 31) * 255 / 31;
-    bottom[3 * i + 1] = ((p >> 5) & 63) * 255 / 63;
-    bottom[3 * i + 2] = ((p >> 11) & 31) * 255 / 31;
+  C3D_SyncDisplayTransfer(top->frameBuf.colorBuf, GX_BUFFER_DIM(240, 400), (u32 *)upper, GX_BUFFER_DIM(240, 400), transfer);
+  GSPGPU_InvalidateDataCache(upper, 400 * 240 * 3);
+  if (bottom) {
+    C3D_SyncDisplayTransfer(bottom->frameBuf.colorBuf, GX_BUFFER_DIM(240, 320), (u32 *)lower, GX_BUFFER_DIM(240, 320), transfer);
+    GSPGPU_InvalidateDataCache(lower, 320 * 240 * 3);
+  } else {
+    memset(lower, 0, 320 * 240 * 3);
   }
   return true;
 }
 
-/* An emulator run: the upper screen as it is in the render target, to the memory card. */
-static void write_shot(C3D_RenderTarget *target) {
+/* An emulator run: a screen as it is in its render target, to the memory card. */
+static void write_shot(C3D_RenderTarget *target, const char *path) {
   unsigned width = target->frameBuf.height, height = target->frameBuf.width;
   u8 *out = linearAlloc(width * height * 3);
   if (!out)
     return;
   C3D_SyncDisplayTransfer(target->frameBuf.colorBuf, GX_BUFFER_DIM(height, width), (u32 *)out, GX_BUFFER_DIM(height, width), transfer);
   GSPGPU_InvalidateDataCache(out, width * height * 3);
-  FILE *f = fopen("sdmc:/pocket-tokyo/shot.bgr", "wb");
+  FILE *f = fopen(path, "wb");
   if (f) {
     fwrite(out, 1, width * height * 3, f);
     fclose(f);
@@ -337,12 +421,24 @@ static void write_shot(C3D_RenderTarget *target) {
   linearFree(out);
 }
 
+/* What the interface asked to have stored goes to the card. */
+static void keep_prefs(void) {
+  static char text[4096];
+  uint32_t n = tk_prefs_take(text, sizeof text);
+  FILE *f = n ? fopen(PREFS_PATH, "w") : NULL;
+  if (f) {
+    fwrite(text, 1, n, f);
+    fclose(f);
+  }
+}
+
 static void read_pad(TkPad *pad) {
   u32 held = hidKeysHeld();
   circlePosition c;
   hidCircleRead(&c);
   pad->buttons = (held & KEY_Y ? TK_FAST : 0) | (held & (KEY_R | KEY_ZR) ? TK_UP : 0) | (held & (KEY_L | KEY_ZL) ? TK_DOWN : 0);
-  pad->keys = (held & KEY_START ? TK_TOUR : 0) | (held & KEY_SELECT ? TK_STATS : 0) | (held & KEY_DRIGHT ? TK_LATER : 0) | (held & KEY_DLEFT ? TK_EARLIER : 0) | (held & KEY_DUP ? TK_FASTER : 0) | (held & KEY_DDOWN ? TK_SLOWER : 0);
+  /* START is the interface's: it opens the menu. The bit goes along for a run without an interface. */
+  pad->keys = (held & KEY_SELECT ? TK_TOUR : 0) | (held & KEY_DRIGHT ? TK_LATER : 0) | (held & KEY_DLEFT ? TK_EARLIER : 0) | (held & KEY_START ? TK_MENU : 0);
   /* The Circle Pad reaches about 150 units; nothing inside a sixth of that. One stick: it flies ahead and turns. */
   float x = fmaxf(-1.0f, fminf(1.0f, c.dx / 150.0f)), y = fmaxf(-1.0f, fminf(1.0f, c.dy / 150.0f));
   pad->lx = 0.0f;
@@ -351,19 +447,12 @@ static void read_pad(TkPad *pad) {
   pad->ry = (held & KEY_X ? 0.7f : 0.0f) - (held & KEY_B ? 0.7f : 0.0f);
 }
 
-/* The lower screen: the place and the hour, and the frame in numbers. */
-static void lower_text(const TkView *view) {
-  char title[96];
-  tk_title(title, sizeof title);
-  printf("\x1b[2;2HPOCKET TOKYO\x1b[K\n\n  %s\x1b[K\n\n  %4.1f fps  %4.1f ms\x1b[K\n  cpu %4.1f  gpu %4.1f\x1b[K\n  %luk triangles  %lu draws\x1b[K\n  near %3.0f m  mid %4.0f m\x1b[K\n\n  Circle Pad: fly   X B: look\x1b[K\n  L R: down, up   Y: fast\x1b[K\n  +Pad: the clock   START: tour\x1b[K\n",
-         title, 1000.0f / fmaxf(perf.frame, 0.1f), perf.frame, cpu_ms, gpu_ms, (unsigned long)((perf.tris[0] + perf.tris[1] + perf.tris[2] + perf.tris[3]) / 1000), (unsigned long)perf.draws, view->near, view->mid);
-  flush_console();
-}
-
 int main(void) {
   gfxInitDefault();
   gfxSet3D(false);
   mkdir("sdmc:/pocket-tokyo", 0777);
+  mkdir("sdmc:/3ds", 0777);
+  mkdir("sdmc:/3ds/pocket-tokyo", 0777);
   /* Test runs: control words for the start, title=0, shot=N, exit=N. */
   static char boot[512];
   FILE *bf = fopen("sdmc:/pocket-tokyo/boot.txt", "r");
@@ -381,8 +470,6 @@ int main(void) {
   /* The Pocket3D title card, on both screens, before the GPU is set up. */
   if (!strstr(boot, "title=0"))
     pocket3d_title_play();
-  gfxSetDoubleBuffering(GFX_BOTTOM, false);
-  consoleInit(GFX_BOTTOM, NULL);
   boot_log = fopen("sdmc:/pocket-tokyo/boot.log", "w");
   say("Pocket Tokyo " TOKYO_BUILD_ID);
   char error[256] = {0};
@@ -399,7 +486,7 @@ int main(void) {
   APT_CheckNew3DS(&new3ds);
   /* (a frame is a few hundred draws, each with a matrix of its own: four times the usual command buffer) */
   bool gpu_ok = C3D_Init(C3D_DEFAULT_CMDBUF_SIZE * 4), gpu_stalled = false;
-  C3D_RenderTarget *top = gpu_ok ? C3D_RenderTargetCreate(240, 400, GPU_RB_RGBA8, GPU_RB_DEPTH24_STENCIL8) : NULL;
+  top = gpu_ok ? C3D_RenderTargetCreate(240, 400, GPU_RB_RGBA8, GPU_RB_DEPTH24_STENCIL8) : NULL;
   if (top)
     C3D_RenderTargetSetOutput(top, GFX_TOP, GFX_LEFT, transfer);
   Result romfs = romfsInit();
@@ -407,6 +494,39 @@ int main(void) {
   stage = "loading";
   devserver_set_runtime(&state, NULL, stage, 0);
   devserver_poll();
+
+  /* The interface comes up before the pack is read, so it can show the reading. */
+  if (top && R_SUCCEEDED(romfs)) {
+    static char prefs[4096];
+    FILE *kept = fopen(PREFS_PATH, "r");
+    if (kept) {
+      tk_prefs_stored(prefs, fread(prefs, 1, sizeof prefs - 1, kept));
+      fclose(kept);
+    }
+    u32 heap_before = mallinfo().uordblks, linear_before = linearSpaceFree();
+    /* The interface draws without depth: the lower target has a colour buffer only. */
+    bottom = C3D_RenderTargetCreate(240, 320, GPU_RB_RGBA8, -1);
+    if (bottom && guest_boot(error, sizeof error)) {
+      C3D_RenderTargetSetOutput(bottom, GFX_BOTTOM, GFX_LEFT, transfer);
+      /* A few turns mount its screens: what it holds after them is what it takes. */
+      tk_stage(TK_STAGE_LOADING, "", 0);
+      for (int i = 0; i < 4; i++)
+        guest_turn_now();
+      interface_frame();
+      guest_heap = mallinfo().uordblks - heap_before;
+      guest_linear = linear_before - linearSpaceFree();
+    } else {
+      if (bottom)
+        C3D_RenderTargetDelete(bottom);
+      else
+        snprintf(error, sizeof error, "no video memory for the lower screen");
+      bottom = NULL;
+      say(error);
+      console_error("The interface did not start:");
+      console_error(error);
+    }
+  }
+
   if (!gpu_ok || !top)
     snprintf(app_error, sizeof app_error, "PICA initialization failed");
   else if (R_FAILED(romfs))
@@ -419,19 +539,18 @@ int main(void) {
     s32 priority = 0x30;
     svcGetThreadPriority(&priority, CUR_THREAD_HANDLE);
     reader = threadCreate(worker, NULL, 32 * 1024, priority + 1, -2, false);
-    if (boot[0])
-      tk_control(boot, strlen(boot));
     stage = "running";
-    consoleClear();
+    if (boot[0])
+      words(boot, strlen(boot));
   } else {
     stage = "load-error";
-    say(app_error);
+    failed();
   }
   devserver_set_runtime(&state, NULL, stage, 0);
   u64 last = svcGetSystemTick(), next_retry = 0;
   u32 ticks = 2, late = 0, last_count = C3D_FrameCounter(0);
   float worst = 0, avg = 33.3f;
-  bool shot = false, capture_pending = false;
+  bool shot = false, capture_pending = false, lower_stale = false;
   while (aptMainLoop()) {
     hidScanInput();
     u32 held = hidKeysHeld();
@@ -470,11 +589,28 @@ int main(void) {
         controls(line);
       }
     }
-    if (native_receiving() || gpu_stalled || !loaded) {
-      /* (an emulator run that did not load ends here, with its error in boot.log) */
-      if (exit_at >= 0 && !loaded)
-        break;
+    if (native_receiving() || gpu_stalled || !top) {
       svcSleepThread(1000000);
+      continue;
+    }
+    if (!loaded) {
+      /* (an emulator run that did not load ends here, with its error in boot.log) */
+      if (exit_at >= 0)
+        break;
+      /* The interface says why; without it the console already has. */
+      if (guest_running()) {
+        guest_turn(1.0f / 60);
+        interface_frame();
+        /* A capture reads the targets once the GPU has finished the frame just queued. */
+        if (devserver_take_screenshot_request() && C3D_FrameBegin(C3D_FRAME_SYNCDRAW)) {
+          bool captured = capture();
+          C3D_FrameEnd(0);
+          if (captured)
+            devserver_screenshot_ready();
+        }
+      } else {
+        svcSleepThread(1000000);
+      }
       continue;
     }
     if (exit_at >= 0 && frame_no < 3)
@@ -485,7 +621,10 @@ int main(void) {
     /* ------------------------------------------------------------ input, the flight, the frame's draws */
     TkPad pad;
     read_pad(&pad);
+    /* Does what the interface asked on its last turn, then shows it the flight as it now is. */
     tk_step(&pad, ticks);
+    tk_report(&perf);
+    keep_prefs();
     TkView view;
     tk_view(&view);
     want_shade = view.shade;
@@ -498,6 +637,20 @@ int main(void) {
     if (exit_at >= 0 && frame_no < 2)
       say("Chosen");
     float chosen_ms = (float)(svcGetSystemTick() - now) * 1000.0f / SYSCLOCK_ARM11;
+
+    /* ------------------------------------------------------------ the interface's turn, beside the GPU's work on the frame before */
+    u64 turn_start = svcGetSystemTick();
+    bool was_running = guest_running();
+    /* (option 512 withholds the turn, to measure what it costs) */
+    if (!(view.option & 512))
+      guest_turn(ticks / 60.0f);
+    if (was_running && !guest_running()) {
+      devserver_report_log("error", guest_error());
+      /* Its last picture does not stay on the lower screen. */
+      lower_stale = true;
+    }
+    float turn_ms = (float)(svcGetSystemTick() - turn_start) * 1000.0f / SYSCLOCK_ARM11;
+    ui_ms += (turn_ms - ui_ms) * 0.05f;
 
     /* ------------------------------------------------------------ the previous frame leaves the GPU */
     u64 wait_start = svcGetSystemTick();
@@ -521,11 +674,11 @@ int main(void) {
       capture_pending = false;
     }
     if (shot) {
-      capture_pending = capture(top);
+      capture_pending = capture();
       shot = false;
     }
     if (exit_at >= 0 && (long)frame_no >= exit_at) {
-      static char line[2800];
+      static char line[3400];
       status_text(line, sizeof line);
       FILE *f = fopen("sdmc:/pocket-tokyo/status.json", "w");
       if (f) {
@@ -556,24 +709,33 @@ int main(void) {
     /* ------------------------------------------------------------ this frame */
     u64 build_start = svcGetSystemTick();
     tk_refill();
+    /* The interface's vertices when it took a turn; the city; the interface over it; the lower screen on the
+     * frames its list changed (it keeps what it showed on the others). */
+    guest_prepare();
     render_frame(top, &view, lists, counts);
+    guest_draw_top();
+    if (bottom && (guest_lower_changed() || lower_stale || (long)frame_no == shot_at)) {
+      guest_draw_bottom(bottom);
+      lower_stale = false;
+    }
     if (exit_at >= 0 && frame_no < 2)
       say("Drawn");
     C3D_FrameEnd(0);
-    /* (an emulator run's picture: this frame, once the GPU has drawn it) */
-    if ((long)frame_no == shot_at)
-      write_shot(top);
+    /* (an emulator run's pictures: this frame, once the GPU has drawn it) */
+    if ((long)frame_no == shot_at) {
+      write_shot(top, "sdmc:/pocket-tokyo/shot.bgr");
+      if (bottom)
+        write_shot(bottom, "sdmc:/pocket-tokyo/shot-low.bgr");
+    }
     float build_ms = (float)(svcGetSystemTick() - build_start) * 1000.0f / SYSCLOCK_ARM11;
-    cpu_ms = chosen_ms + build_ms;
+    cpu_ms = chosen_ms + turn_ms + build_ms;
     perf = (TkPerf){.frame = avg, .worst = worst, .late = late, .frames = frame_no, .cpu = cpu_ms, .gpu = gpu_ms, .draws = render_stats.draws, .tris = {render_stats.tris[0], render_stats.tris[1], render_stats.tris[2], render_stats.tris[3]}};
     tk_drew(perf.tris[0] + perf.tris[1] + perf.tris[2] + perf.tris[3]);
     frame_no++;
     devserver_set_runtime(&state, NULL, stage, frame_no);
     devserver_set_frame_stats(frame_no, render_stats.draws, (perf.tris[0] + perf.tris[1] + perf.tris[2] + perf.tris[3]) * 3, 0);
-    devserver_set_frame_timing(0, (uint32_t)(chosen_ms * 1000), (uint32_t)(build_ms * 1000), (uint32_t)(gpu_ms * 1000), (uint32_t)(frame_ms * 1000));
+    devserver_set_frame_timing((uint32_t)(turn_ms * 1000), (uint32_t)(chosen_ms * 1000), (uint32_t)(build_ms * 1000), (uint32_t)(gpu_ms * 1000), (uint32_t)(frame_ms * 1000));
     shot = shot || devserver_take_screenshot_request();
-    if (frame_no % 15 == 7)
-      lower_text(&view);
   }
 
   worker_quit = true;
@@ -588,8 +750,11 @@ int main(void) {
       svcSleepThread(1000000);
     }
     C3D_FrameEnd(0);
+    guest_shutdown();
     if (top)
       C3D_RenderTargetDelete(top);
+    if (bottom)
+      C3D_RenderTargetDelete(bottom);
     C3D_Fini();
   }
   if (!gpu_stalled || !capture_pending)

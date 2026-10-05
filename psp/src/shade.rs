@@ -22,7 +22,7 @@ use psp::sys::*;
 use tokyo_pack::City;
 use tokyo_sim::math::V3;
 
-use crate::store;
+use crate::{mem, store};
 
 /// A picture of the ground, where the shadows are written: its largest level (swizzled indices, the smaller
 /// levels after it), its side in texels, and the square of the city it shows.
@@ -60,8 +60,6 @@ pub static BLOCKS_MS: AtomicU32 = AtomicU32::new(0);
 
 /// What keeps the thread's memory alive.
 pub struct Shade {
-    _swept: Vec<u16>,
-    _mask: Vec<u8>,
     _blocks: Vec<Ground>,
 }
 
@@ -177,16 +175,21 @@ unsafe extern "C" fn worker(_: usize, _: *mut c_void) -> i32 {
 /// Starts the thread. `heights`: the pack's `HMAP`, which stays where it is; `blocks`: the blocks' pictures.
 pub unsafe fn start(heights: &[u16], city: &City, blocks: Vec<Ground>) -> Result<Shade, &'static str> {
     let (w, h) = (city.grid_w as usize, city.grid_h as usize);
-    let mut swept = alloc::vec![0u16; w * h];
-    let mut mask = alloc::vec![0u8; w * h];
-    *ptr::addr_of_mut!(STATE) = State { heights: heights.as_ptr(), w, h, x0: city.grid_x0, z0: city.grid_z0, step: city.grid_step, unit: city.height_step, swept: swept.as_mut_ptr(), mask: mask.as_mut_ptr(), blocks: blocks.as_ptr(), block_count: blocks.len() };
+    // The two grids stay for the rest of the run, at their exact size.
+    let (swept, mask) = (mem::permanent(w * h * 2) as *mut u16, mem::permanent(w * h));
+    if swept.is_null() || mask.is_null() {
+        return Err("no memory for the shadows");
+    }
+    ptr::write_bytes(swept, 0, w * h);
+    ptr::write_bytes(mask, 0, w * h);
+    *ptr::addr_of_mut!(STATE) = State { heights: heights.as_ptr(), w, h, x0: city.grid_x0, z0: city.grid_z0, step: city.grid_step, unit: city.height_step, swept, mask, blocks: blocks.as_ptr(), block_count: blocks.len() };
     let id = sceKernelCreateThread(b"tokyo_shade\0".as_ptr(), worker, 44, 16 * 1024, ThreadAttributes::USER, ptr::null_mut());
     if id.0 < 0 {
         store::LAST_CODE = id.0;
         return Err("the shadows' thread was not created");
     }
     sceKernelStartThread(id, 0, ptr::null_mut());
-    Ok(Shade { _swept: swept, _mask: mask, _blocks: blocks })
+    Ok(Shade { _blocks: blocks })
 }
 
 /// Tells the thread where the sun is.

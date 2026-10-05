@@ -6,7 +6,7 @@
 // map) change up to 30 times a second. Each is written straight to its node
 // (`@pocketjs/framework/hot`) in a cell of fixed size, so a new value costs
 // one native call and no layout. Everything else is a signal.
-import { createEffect, createMemo, createSignal, For, on, onCleanup, onMount, Show, type JSX } from "solid-js";
+import { createEffect, createMemo, createSignal, For, on, onCleanup, onMount, Show, untrack, type JSX } from "solid-js";
 import { useActions, type ActionsHandle } from "@pocketjs/framework/actions";
 import { Image, Text, View } from "@pocketjs/framework/components";
 import type { SurfaceId } from "@pocketjs/framework/display";
@@ -16,7 +16,7 @@ import { BTN } from "@pocketjs/framework/input";
 import { onFrame } from "@pocketjs/framework/lifecycle";
 import { modality } from "@pocketjs/framework/modality";
 import type { NodeMirror } from "@pocketjs/framework/renderer";
-import { clock, phase, point, type Flight, type Row } from "./flight.ts";
+import { clock, phase, point, read, type Flight, type Row } from "./flight.ts";
 import { AREA, MAP, PLACES } from "./generated/area.ts";
 import type { Host } from "./host.ts";
 import { T } from "./protocol.ts";
@@ -77,10 +77,11 @@ function Plate(props: { width: number; height: number }) {
 }
 
 /**
- * Tokyo's clock: what the sky is doing over the hour and the minute. The
- * digits stand at the left of a cell of fixed size: a number written to its
- * node keeps the place layout gave the last one, so text that is centred or
- * set to the right would drift.
+ * Tokyo's clock: what the sky is doing over the hour and the minute; where
+ * `compact`, the hour and the minute alone (a column 65 pixels wide holds no
+ * "AFTERNOON"). The digits stand at the left of a cell of fixed size: a
+ * number written to its node keeps the place layout gave the last one, so
+ * text that is centred or set to the right would drift.
  */
 export function Clock(props: { host: Host; compact?: boolean }) {
   let digits: NodeMirror | undefined, word: NodeMirror | undefined;
@@ -93,11 +94,13 @@ export function Clock(props: { host: Host; compact?: boolean }) {
     const now = phase(minutes);
     if (now !== named) hotText(word, (named = now));
   })));
-  const width = () => (props.compact ? 62 : 76);
+  const width = () => (props.compact ? 52 : 76);
   return (
     <View class="relative flex-col" style={{ width: width() }}>
-      <Plate width={width()} height={props.compact ? 40 : 46} />
-      <Text ref={word} class="text-xs font-bold tracking-wide" style={{ width: width(), height: 14, textColor: DIM }}>MIDDAY</Text>
+      <Plate width={width()} height={props.compact ? 24 : 46} />
+      <Show when={!props.compact}>
+        <Text ref={word} class="text-xs font-bold tracking-wide" style={{ width: width(), height: 14, textColor: DIM }}>MIDDAY</Text>
+      </Show>
       <Text ref={digits} class={props.compact ? "text-lg font-bold" : "text-2xl font-bold"} style={{ width: width(), height: props.compact ? 24 : 30, textColor: INK }}>12:00</Text>
     </View>
   );
@@ -290,13 +293,18 @@ function Switch(props: { on: boolean }) {
  * the device has buttons, the focus mark: one bar that slides to the row,
  * so moving the focus changes one node. A row that only informs is a label
  * and what it means, in a shorter line.
+ *
+ * Every list this view has shown stays built, hidden: showing one again
+ * builds nothing, and a switch that turns writes its own row. `warm` lists
+ * are built with the view, before they are first shown.
  */
-export function Rows(props: { flight: Flight; menu: Menu; width: number; rowHeight: number; infoHeight?: number; surface?: SurfaceId; active?: () => boolean }) {
+export function Rows(props: { flight: Flight; menu: Menu; width: number; rowHeight: number; infoHeight?: number; surface?: SurfaceId; active?: () => boolean; warm?: Row[][] }) {
   const info = () => props.infoHeight ?? 22;
   // A list that is kept but hidden (`active` false) holds its rows and its mark as they were.
   const live = () => props.active?.() ?? true;
-  const rows = createMemo<Row[]>((before) => (live() ? props.flight.rows() : before), []);
+  const rows = createMemo<Row[]>((before) => (live() ? props.flight.rows() : before), props.warm?.[0] ?? []);
   const focus = createMemo<number>((before) => (live() ? props.menu.focus() : before), 0);
+  const built = createMemo<Row[][]>((before) => (!rows().length || before.includes(rows()) ? before : [...before, rows()]), props.warm ?? []);
   return (
     <View class="relative flex-col" style={{ width: props.width }}>
       <Show when={modality.buttons && rows().some((row) => row.press)}>
@@ -304,29 +312,39 @@ export function Rows(props: { flight: Flight; menu: Menu; width: number; rowHeig
           <View class="absolute" style={{ insetL: 0, insetT: 0, width: 3, height: props.rowHeight, bgColor: TOWER }} />
         </View>
       </Show>
-      <For each={rows()}>
-        {(row, index) => (
-          <Show
-            when={row.press}
-            fallback={
-              <View class="relative" style={{ width: props.width, height: info() }}>
-                <Text class="absolute text-xs font-bold" style={{ insetL: 14, insetT: info() / 2 - 8, textColor: TOWER }}>{row.label}</Text>
-                <Text class="absolute text-xs" style={{ insetL: 14 + Math.min(104, props.width * 0.36), insetT: info() / 2 - 8, textColor: DIM }}>{row.value ?? ""}</Text>
-              </View>
-            }
-          >
-            <Touchable surface={props.surface} class="relative" style={{ width: props.width, height: props.rowHeight }} onTap={() => props.menu.press(index())}>
-              <Text class="absolute text-sm font-bold" style={{ insetL: 14, insetT: props.rowHeight / 2 - 9, textColor: INK }}>{row.label}</Text>
-              <Show when={row.on !== undefined}>
-                <View class="absolute" style={{ insetR: 14, insetT: props.rowHeight / 2 - 9 }}><Switch on={!!row.on} /></View>
-              </Show>
-              <Show when={row.value !== undefined}>
-                <Text class="absolute text-sm" style={{ insetR: 14, insetT: props.rowHeight / 2 - 9, textColor: DIM }}>{row.value}</Text>
-              </Show>
-              <View class="absolute" style={{ insetL: 0, insetB: 0, width: props.width, height: 1, bgColor: HAIRLINE }} />
-            </Touchable>
-          </Show>
-        )}
+      <For each={built()}>
+        {(list) => {
+          // A list keeps the row height it was built with: another list's height does not reach it.
+          const height = untrack(() => props.rowHeight);
+          return (
+            <View class="flex-col" style={{ width: props.width, display: list === rows() ? 0 : 1 }}>
+              <For each={list}>
+                {(row, index) => (
+                  <Show
+                    when={row.press}
+                    fallback={
+                      <View class="relative" style={{ width: props.width, height: info() }}>
+                        <Text class="absolute text-xs font-bold" style={{ insetL: 14, insetT: info() / 2 - 8, textColor: TOWER }}>{read(row.label)}</Text>
+                        <Text class="absolute text-xs" style={{ insetL: 14 + Math.min(104, props.width * 0.36), insetT: info() / 2 - 8, textColor: DIM }}>{read(row.value ?? "")}</Text>
+                      </View>
+                    }
+                  >
+                    <Touchable surface={props.surface} class="relative" style={{ width: props.width, height }} onTap={() => props.menu.press(index())}>
+                      <Text class="absolute text-sm font-bold" style={{ insetL: 14, insetT: height / 2 - 9, textColor: INK }}>{read(row.label)}</Text>
+                      <Show when={row.on}>
+                        <View class="absolute" style={{ insetR: 14, insetT: height / 2 - 9 }}><Switch on={row.on!()} /></View>
+                      </Show>
+                      <Show when={row.value !== undefined}>
+                        <Text class="absolute text-sm" style={{ insetR: 14, insetT: height / 2 - 9, textColor: DIM }}>{read(row.value!)}</Text>
+                      </Show>
+                      <View class="absolute" style={{ insetL: 0, insetB: 0, width: props.width, height: 1, bgColor: HAIRLINE }} />
+                    </Touchable>
+                  </Show>
+                )}
+              </For>
+            </View>
+          );
+        }}
       </For>
     </View>
   );
