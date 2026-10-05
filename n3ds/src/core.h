@@ -127,6 +127,30 @@ void tk_shadows(const float *sun, float shade, uint16_t *swept, uint8_t *texture
 uint32_t tk_title(char *out, uint32_t cap);
 uint32_t tk_status(char *out, uint32_t cap, const TkPerf *perf, const char *extra, uint32_t extra_len);
 float tk_ground(float x, float z);
+
+/* ---- the interface (ui/, a PocketJS guest the host runs: guest.c). The flow around the flight is the
+ * core's (tokyo_interface::Session); the guest's service channel is answered there (svcwire.h). */
+/* TkPad.keys: the button that opens the menu. The interface hears it by itself; with no interface on the
+ * screen it hands the eye to the tour and takes it back. */
+#define TK_MENU (1u << 16)
+/* tk_stage: what the interface shows while there is no flight. */
+#define TK_STAGE_LOADING 0u
+#define TK_STAGE_ERROR 1u
+/* Before the flight exists: the loading step, or why the start failed. The first tk_step replaces it with the flow. */
+void tk_stage(uint32_t stage, const char *message, uint32_t len);
+/* The preferences read from storage at the start, and what the interface asked to have stored since the last
+ * call (NUL-terminated; 0 when there is nothing). */
+void tk_prefs_stored(const char *text, uint32_t len);
+uint32_t tk_prefs_take(char *out, uint32_t cap);
+/* Whether the guest's next turn is worth taking: it has something scheduled, the flight has news for it, or a
+ * button it listens to changed (`buttons`: PocketJS's bits, as held since the last offer; `touching`: a contact). */
+uint32_t tk_guest_due(uint32_t buttons, uint32_t touching);
+/* A guest holds the interface's channel. */
+uint32_t tk_interface_open(void);
+/* Once a frame: the statistics line the interface shows while its setting is on. */
+void tk_report(const TkPerf *perf);
+/* Words of a control text that are the flow's: mode=title|flight|menu, ui=tour|fly|menu|resume|title. */
+void tk_remote(const char *text, uint32_t len);
 #ifdef __APPLE__
 /* The iPod touch (ipod/core builds the same source): a frame of the Pocket3D title card as RGBA rows.
  * 0: the card is over; 1: drawn; 2: the frame is the one drawn at tick `shown`. */
