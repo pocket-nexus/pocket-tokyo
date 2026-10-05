@@ -1,19 +1,20 @@
-// Pocket Tokyo in a browser tab: the page around the wgpu renderer (../src,
-// built to pkg/) and the game's own interface (../../ui, one bundle a device,
-// compiled by tools/ui.ts), which a realm of the page runs on PocketJS's UI
-// core and the renderer lays over the city. The pocket3d-*.js modules, the
-// realm and the title card are PocketJS's browser kernel
-// (vendor/pocketjs/devices/web/pocket-web-wgpu), staged beside this file.
+// Pocket Tokyo in a browser tab: the wgpu renderer (../src, built to pkg/)
+// and the game's own interface (../../ui, one bundle a device, compiled by
+// tools/ui.ts), which a realm of the page runs on PocketJS's UI core and the
+// renderer lays over the city. The page itself is the Pocket3D player of
+// PocketJS's browser kernel (vendor/pocketjs/devices/web/pocket-web-wgpu,
+// staged beside this file): the bar, the device's shell with its keys, the
+// way to Pocket Studio. This file says what the game is and draws into the
+// player's canvas.
 //
-// The page shows one of the handhelds the city runs on: its screens at their
-// own size, its presentation of the interface, its buttons. The Pocket3D title
+// The page shows one of the handhelds the city runs on: its shell, its
+// screens, its presentation of the interface, its buttons. The Pocket3D title
 // card plays first; the interface and the head of the pack are read while it
 // plays, and the blocks' pictures of the ground after the first frame.
 //
 // The address chooses the device and the pack:
 //
 //   ?device=vita|psp|3ds|ipod   the handheld (without it: an iPod touch for a finger, a PS Vita otherwise)
-//   ?buttons                    the device's buttons on the page, also where there is a keyboard
 //   ?size=960x544 &samples=4 &budget=200000 &hz=60   the first device's screen, changed
 //   ?pack=URL                   the pack (an iPod touch pack): its file, on a server that answers byte
 //                               ranges, or the manifest (.json) of one cut into pieces. Without it, the
@@ -26,30 +27,45 @@
 import { playTitle } from "./pocket3d-title.js";
 import { frames, hasWebGPU, titleCard } from "./pocket3d-shell.js";
 import { openInterface, screens } from "./pocket3d-interface.js";
-import { createControls, legend } from "./pocket3d-controls.js";
-import { choices, createStage } from "./pocket3d-stage.js";
+import { createPlayer } from "./pocket3d-player.js";
 import init, { Tokyo, shapes } from "./pkg/tokyo_wgpu.js";
 
 // The handhelds: each one's screen is the renderer's shape of the same name, its interface the bundle
 // under ui/<id>/, and `sticks` says how it is flown (README, "Controls"): two sticks, one stick and two
-// buttons to look up and down, or the interface's own stick on a touch panel.
+// buttons to look up and down, or the interface's own stick on a touch panel. `note` is what the player
+// says beside the device's name: how this picture differs from the one that device's own build draws
+// (README, the table of devices).
 const DEVICES = [
-  { id: "vita", label: "PS Vita", sticks: 2 },
-  { id: "psp", label: "PSP", sticks: 1 },
-  { id: "3ds", label: "Nintendo 3DS", sticks: 1 },
-  { id: "ipod", label: "iPod touch", sticks: 0 },
+  { id: "vita", label: "PS Vita", sticks: 2, note: "On a PS Vita the city has about three times the triangles, traffic on its streets and a glow at night. This page draws the iPod touch build's city." },
+  { id: "psp", label: "PSP", sticks: 1, note: "On a PSP the edges are hard and the light is plainer. This page draws the iPod touch build's city, with smoothed edges." },
+  { id: "3ds", label: "Nintendo 3DS", sticks: 1, note: "On a 3DS the edges are hard and the light is plainer. This page draws the iPod touch build's city, with smoothed edges." },
+  { id: "ipod", label: "iPod touch", sticks: 0, note: "This page draws the iPod touch build's own pack and passes. On an iPod touch 4 the colours are less precise, and a few frames in a thousand come late." },
 ];
 // Where the interface's settings are kept between visits (a device keeps them in a file).
 const KEPT = "pocket-tokyo.interface";
 
 const query = new URLSearchParams(location.search);
-const canvas = document.getElementById("city");
-const say = (text) => (document.getElementById("say").textContent = text);
 const number = (name) => Math.max(0, Number.parseInt(query.get(name) ?? "0", 10) || 0);
 const beside = (name) => new URL(name, import.meta.url).href;
 const message = (error) => String(error?.message ?? error);
 const coarse = matchMedia("(pointer: coarse)").matches;
 const started = performance.now();
+
+// The page: PocketJS's player, with the device the address asks for, or an iPod touch under a finger.
+const wanted = query.get("device") ?? query.get("shape");
+let device = DEVICES.find((d) => d.id === wanted) ?? DEVICES.find((d) => d.id === (coarse ? "ipod" : "vita"));
+let present = () => {};
+const player = createPlayer({
+  title: "Pocket Tokyo",
+  tagline: "A flight over Shiba, around Tokyo Tower.",
+  devices: DEVICES,
+  device: device.id,
+  // (the targets `bun tools/release.ts` builds a package for)
+  runsOn: ["psp", "vita", "3ds", "ipod-touch", "android"],
+  pick: (id) => present(DEVICES.find((d) => d.id === id)),
+});
+const { canvas, stage, controls } = player;
+const say = (text) => player.say(text);
 
 function kept() {
   try {
@@ -71,15 +87,11 @@ async function start() {
   }
   await init();
   const all = JSON.parse(shapes());
-  const wanted = query.get("device") ?? query.get("shape");
-  let device = DEVICES.find((d) => d.id === wanted) ?? DEVICES.find((d) => d.id === (coarse ? "ipod" : "vita"));
-  const stage = createStage(document.getElementById("stage"), canvas);
-  const controls = createControls();
 
   // The shell, on the first device's screen. It draws before there is a city: the interface says what is read.
   const [width, height] = (query.get("size") ?? "").split("x").map((n) => Number.parseInt(n, 10) || 0);
   const first = all.find((s) => s.name === device.id);
-  stage.show({ width: width || first.width, height: height || first.height });
+  stage.show({ device: device.id, width: width || first.width, height: height || first.height });
   const tokyo = await Tokyo.open(canvas, first.name, kept());
   let shape = JSON.parse(tokyo.reshape(first.name, canvas.width, canvas.height, number("samples"), number("budget"), number("hz")));
   // (the flow waits at the title for a guest: one is on its way)
@@ -116,28 +128,18 @@ async function start() {
   // A device on the page: its screens, its controls, and its presentation of the interface in a new realm.
   let ui = null;
   let lower = null;
-  const picker = choices(document.getElementById("devices"), DEVICES, device.id, (id) => present(DEVICES.find((d) => d.id === id)));
-  async function present(next, sized) {
+  present = async (next, sized) => {
     device = next;
-    picker.set(next.id);
     const plan = await (await fetch(beside(`ui/${next.id}/plan.json`))).json();
     if (device !== next) return;
     const of = screens(plan);
     const to = sized ?? all.find((s) => s.name === next.id);
-    stage.show({ width: to.width, height: to.height, lower: of.auxiliary });
+    // The device's shell with its screens in it, its keys as the controls, and the screen that takes touch.
+    player.show(next.id, { width: to.width, height: to.height, lower: of.auxiliary, sticks: next.sticks, glyphs: of.glyphs, touch: of.touch, viewport: of.viewport });
     shape = JSON.parse(tokyo.reshape(to.name, to.width, to.height, to.samples, to.budget, to.hz));
     // (the turns a second the device's own host gives its interface)
     const simHz = shape.turns;
-    controls.device({ sticks: next.sticks, glyphs: of.glyphs });
-    if (coarse || query.has("buttons")) controls.buttonsIn(stage.left, stage.right);
-    document.getElementById("stage").toggleAttribute("data-stacked", innerHeight > innerWidth);
-    stage.fit();
-    controls.touch(of.touch === "primary" ? canvas : of.touch === "auxiliary" ? stage.second : null, of.touch === "auxiliary" ? of.auxiliary : of.viewport);
     lower = of.auxiliary ? new ImageData(of.auxiliary[0], of.auxiliary[1]) : null;
-    const keys = legend({ sticks: next.sticks, glyphs: of.glyphs }).map(([key, what]) => `${key}: ${what}`);
-    const pointer = of.touch === "auxiliary" ? ["the pointer is a stylus on the lower screen"] : of.touch === "primary" ? [next.sticks ? "the screen takes taps" : "The pointer is a finger on the screen"] : [];
-    // (a browser whose pointer is a finger has no keys to be told of, and knows what its finger is)
-    document.getElementById("keys").textContent = coarse ? "" : [...keys, ...pointer].join(" · ");
     // The guest of the device before goes with its realm; the new one is told the whole state on its first turn.
     ui?.close();
     ui = null;
@@ -155,11 +157,7 @@ async function start() {
       report.failure = message(error);
       tokyo.control("mode=flight");
     }
-  }
-  addEventListener("resize", () => {
-    document.getElementById("stage").toggleAttribute("data-stacked", innerHeight > innerWidth);
-    stage.fit();
-  });
+  };
   const presented = present(device, { ...shape });
 
   // One frame: the flight, the guest's turn when it is worth one, its picture when that has changed, the scene.
@@ -208,7 +206,11 @@ async function start() {
     tokyo.draw();
     report.frames++;
     report.firstFrame ||= performance.now() - started;
-    if (!report.firstCity && tokyo.flies()) report.firstCity = performance.now() - started;
+    if (!report.firstCity && tokyo.flies()) {
+      report.firstCity = performance.now() - started;
+      // (the city is on the screen: the player may read what it kept back)
+      player.ready();
+    }
   };
 
   await title;
