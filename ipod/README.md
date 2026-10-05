@@ -64,9 +64,9 @@ The tour (`bun tools/ipod.ts bench`), 150 s from its start at 15:30 into the nig
 
 | Window | Frames | Late frames | Average frame | Worst frame | Triangles | Draws |
 | --- | --- | --- | --- | --- | --- | --- |
-| 150 s | 8 995 | 8 (0.09 %) | 16.68 ms | 42.3 ms | 19 400 to 34 100, mean 29 300 | mean 233, most 330 |
+| 150 s | 8 995 | 6 (0.07 %) | 16.68 ms | 38.0 ms | 19 400 to 34 100, mean 29 300 | mean 233, most 330 |
 
-From the launch to the end of that run the thread read 481 cells (10 ms each) and swept the shadows 39 times.
+A run before it, of the same code, had 8 late frames and a worst frame of 42.3 ms. Reading a cell takes the thread 8 to 10 ms (826 cells in 6.9 s of reading over one long run).
 
 ## Development loop
 

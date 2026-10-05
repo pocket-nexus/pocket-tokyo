@@ -9,7 +9,7 @@ This repository is private until its owner says otherwise. Compiled city data ke
 | PS Vita | 960 × 544, 4× MSAA, shadows that follow the clock, night glow | GXM, programs compiled on the device | 150 s of the tour from 15:36 to 20:04, with the traffic: 9 010 frames, **0 late**, worst frame 16.9 ms, 90 000 to 198 000 triangles a frame (mean 162 000), 225 draws |
 | PSP | 480 × 272, shadows that follow the clock | GE, fixed function, one display list a frame | 150 s of the tour (PSPLINK, 333 MHz): 4 500 frames, **0 late**, worst frame 35.5 ms, 22 400 to 43 900 triangles a frame (mean 37 500), 1 253 draws |
 | Nintendo 3DS | 400 × 240 on the upper screen, shadows that follow the clock; the clock and the frame in numbers on the lower one | PICA200: four vertex programs, three combiner stages | Old 3DS, one view of the build before the landmark models: 30 frames a second, 44 000 triangles, 289 draws, 10.7 ms of CPU, 18.6 ms of GPU. The tour is not benched on the console yet |
-| iPod touch 4 | 480 × 320, 4× MSAA, shadows that follow the clock, the tower's lamps by night | OpenGL ES 2 on the SGX535: seven programs | 150 s of the tour from 15:35 to 20:05 (iOS 6.1.6): 8 995 frames, **8 late** (0.09 %), worst frame 42.3 ms, 19 400 to 34 100 triangles a frame (mean 29 300), 233 draws |
+| iPod touch 4 | 480 × 320, 4× MSAA, shadows that follow the clock, the tower's lamps by night | OpenGL ES 2 on the SGX535: seven programs | 150 s of the tour from 15:35 to 20:05 (iOS 6.1.6): 8 995 frames, **6 late** (0.07 %), worst frame 38.0 ms, 19 400 to 34 100 triangles a frame (mean 29 300), 233 draws |
 
 The city is modelled once as Three.js content that runs in a browser, and a compiler lowers it to what one console draws:
 
