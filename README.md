@@ -2,7 +2,7 @@
 
 Tokyo, flown over on a PS Vita, a PSP, a Nintendo 3DS, an iPod touch 4 and a Redmi 1S. The city is the real one: 14 753 buildings of the Shiba district around Tokyo Tower, from Japan's open 3D city model (Project PLATEAU), OpenStreetMap and the national elevation survey. The sun crosses the sky, the shadows turn with it, the windows and the street lamps come on at dusk, and on the Vita the traffic runs on the real road graph. **960 × 544 with 4× multisampling at 60 frames per second on the Vita; 480 × 320 with 4× multisampling at 60 on the iPod touch; the panel's own 1280 × 720 at 60 on the Redmi 1S; 30 frames per second on the PSP and the 3DS.**
 
-The packages for each device are on [Pocket Studio](https://studio.pocket.nexus) for its members. Compiled city data keeps the terms of its sources ([Attribution](#attribution)).
+It plays in a browser at [tokyo.studio.pocket.nexus](https://tokyo.studio.pocket.nexus). Its page on Pocket Studio, [studio.pocket.nexus/games/tokyo](https://studio.pocket.nexus/games/tokyo), has recordings and the packages for each device, which members download. Compiled city data keeps the terms of its sources ([Attribution](#attribution)).
 
 | | Screen | Renderer | Measured |
 | --- | --- | --- | --- |
