@@ -36,10 +36,10 @@ import init, { Tokyo, shapes } from "./pkg/tokyo_wgpu.js";
 // says beside the device's name: how this picture differs from the one that device's own build draws
 // (README, the table of devices).
 const DEVICES = [
-  { id: "vita", label: "PS Vita", sticks: 2, note: "On a PS Vita the city has about three times the triangles, traffic on its streets and a glow at night. This page draws the iPod touch build's city." },
-  { id: "psp", label: "PSP", sticks: 1, note: "On a PSP the edges are hard and the light is plainer. This page draws the iPod touch build's city, with smoothed edges." },
-  { id: "3ds", label: "Nintendo 3DS", sticks: 1, note: "On a 3DS the edges are hard and the light is plainer. This page draws the iPod touch build's city, with smoothed edges." },
-  { id: "ipod", label: "iPod touch", sticks: 0, note: "This page draws the iPod touch build's own pack and passes. On an iPod touch 4 the colours are less precise, and a few frames in a thousand come late." },
+  { id: "vita", label: "PS Vita", sticks: 2, note: { en: "On a PS Vita the city has about three times the triangles, traffic on its streets and a glow at night. This page draws the iPod touch build's city.", ja: "PS Vita では街のポリゴン数がおよそ 3 倍になり、通りには車が走り、夜には光がにじみます。このページは iPod touch 版の街を描いています。" } },
+  { id: "psp", label: "PSP", sticks: 1, note: { en: "On a PSP the edges are hard and the light is plainer. This page draws the iPod touch build's city, with smoothed edges.", ja: "PSP では輪郭がぎざぎざになり、光の表現も簡素になります。このページは iPod touch 版の街を、輪郭をなめらかにして描いています。" } },
+  { id: "3ds", label: "Nintendo 3DS", sticks: 1, note: { en: "On a 3DS the edges are hard and the light is plainer. This page draws the iPod touch build's city, with smoothed edges.", ja: "3DS では輪郭がぎざぎざになり、光の表現も簡素になります。このページは iPod touch 版の街を、輪郭をなめらかにして描いています。" } },
+  { id: "ipod", label: "iPod touch", sticks: 0, note: { en: "This page draws the iPod touch build's own pack and passes. On an iPod touch 4 the colours are less precise, and a few frames in a thousand come late.", ja: "このページは iPod touch 版そのもののパックと描画パスで描いています。iPod touch 4 では色の精度が少し低く、1,000 フレームのうち数フレームが遅れます。" } },
 ];
 // Where the interface's settings are kept between visits (a device keeps them in a file).
 const KEPT = "pocket-tokyo.interface";
@@ -57,7 +57,7 @@ let device = DEVICES.find((d) => d.id === wanted) ?? DEVICES.find((d) => d.id ==
 let present = () => {};
 const player = createPlayer({
   title: "Pocket Tokyo",
-  tagline: "A flight over Shiba, around Tokyo Tower.",
+  tagline: { en: "A flight over Shiba, around Tokyo Tower.", ja: "東京タワーを囲む芝の街を、空から飛ぶ。" },
   devices: DEVICES,
   device: device.id,
   // (the targets `bun tools/release.ts` builds a package for)
@@ -82,7 +82,7 @@ async function start() {
   const title = titleCard(playTitle, () => pump());
   if (!hasWebGPU()) {
     await title;
-    say("This browser has no WebGPU, which Pocket Tokyo draws with.");
+    say({ en: "This browser has no WebGPU, which Pocket Tokyo draws with.", ja: "このブラウザは WebGPU に対応していません。Pocket Tokyo の描画には WebGPU が必要です。" });
     return;
   }
   await init();

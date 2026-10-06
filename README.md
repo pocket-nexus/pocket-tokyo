@@ -279,10 +279,11 @@ For each target the tool cooks the profile's pack from `.pocket-build/city/shiba
 `bun tools/listing.ts` films what the game's page on Pocket Studio shows and writes it to `dist/listing/`, which Git ignores:
 
 ```
-bun tools/listing.ts [--only FILE] [--upload]
+bun tools/listing.ts [--only FILE | --words] [--upload]
 ```
 
 - **The words are `listing/listing.json`, in Git**: one sentence, the paragraphs, and for each clip and still its file, its size in pixels, what drew it (`from`) and a caption. The description credits the city's sources ([Attribution](#attribution)). The tool stops when the JSON names a file it has no take for, or when it has a take the JSON does not name.
+- **The Japanese words are `translations.ja` in the same file**: the sentence, the paragraphs and a caption for each picture, under the English limits; Pocket Studio shows them on the game's Japanese page and shows the English for a word they leave out. `bun tools/listing.ts --words` writes `dist/listing/listing.json` for the pictures already in `dist/listing/`, without filming.
 - **The pictures are filmed from the game.** `wgpu/src/bin/film.rs` (`tokyo-film`) runs the browser tab's renderer on this machine's GPU, at the PS Vita's 960 × 544 with four samples a pixel, and writes one frame for each line of a list of the development host's words. The flight advances two sixtieths of a second a frame, and a frame is drawn again until every cell near the eye and every block's picture has been read, so no frame shows a cell on its way. `tools/listing.ts` writes the lists and hands the frames to ffmpeg.
 - **A clip is the tour from a second of its route, or an eye carried through a row of points**, with the clock at an hour and running at a rate. A carried eye keeps over open ground and streets, as the flight's own keeps out of the buildings. A clip is H.264 at 30 frames a second with no sound, with a fade of ten frames at each end so that it loops through a dip, held under 12 MiB by a ceiling on its rate; its poster is that frame filmed again, as a JPEG.
 

@@ -74,6 +74,8 @@ The page shows one handheld at a time. A device is the renderer's shape (`SHAPES
 
 Picking another device in a flight changes the shell and the screen's shape, starts that device's guest in a new realm and leaves the flight as it is: the new guest is told the whole state on its first turn. The first device is the iPod touch for a browser whose pointer is a finger and the PS Vita otherwise (`?device=`).
 
+**The page speaks English and Japanese**, as PocketJS's player does (its README, "Languages"): `main.js` gives the game's sentence, each device's `note` and its own lines to the player as `{ en, ja }`; the player picks the language and shows the game's English for a word with no Japanese.
+
 **Each device says how its own build differs** (`note` in `DEVICES` of `main.js`, from the table of devices in the repository's README): the mark's panel shows the player's sentence, then that one. A change to what a device's build draws changes its note.
 
 Whatever the device, the pack is the iPod touch's: a device changes how much of that pack a frame draws, not what the city was lowered to.
