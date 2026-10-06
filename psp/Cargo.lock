@@ -98,6 +98,7 @@ version = "0.1.0"
 dependencies = [
  "libm",
  "libquickjs-sys",
+ "pocket-psp-ge",
  "pocket3d-title",
  "pocketjs-psp",
  "psp",

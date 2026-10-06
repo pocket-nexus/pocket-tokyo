@@ -33,6 +33,7 @@ use core::ffi::c_void;
 use core::ptr;
 
 use alloc::vec::Vec;
+use pocket_psp_ge::DisplayList;
 use psp::sys::*;
 use psp::Align16;
 use tokyo_pack::{self as pack, kind, Batch, Block, Cell, City, HandPicture, Landmark, Region, KINDS, SECTORS};
@@ -48,7 +49,14 @@ use crate::store::{self, Kept};
 use crate::stream::Streamer;
 
 const LIST_WORDS: usize = 98_304;
-static mut LIST: Align16<[u32; LIST_WORDS]> = Align16([0; LIST_WORDS]);
+// sceGuStart writes the list through the uncached mirror, so it has data-cache lines of its own. In a line shared
+// with a static the CPU writes through the cache (DRAW_BUFFER was that static), the line's write-back puts the frame
+// before's first commands, its frame buffer among them, over this frame's (pocket_psp_ge::list).
+static mut LIST: DisplayList<LIST_WORDS> = DisplayList::new();
+/// The list every frame is written into.
+fn list() -> *mut c_void {
+    DisplayList::as_mut_ptr(ptr::addr_of_mut!(LIST))
+}
 /// One white texel, for what is painted: the texture stage doubles a colour only when there is a texture.
 static mut WHITE: Align16<[u16; 64]> = Align16([0xffff; 64]);
 
@@ -218,7 +226,7 @@ unsafe fn bind(palette: *const u32, data: *const u8, width: u32, height: u32, le
 /// Starts the GE: two 16-bit frame buffers, the depth buffer, and the state every frame assumes.
 pub unsafe fn init() {
     sceGuInit();
-    sceGuStart(GuContextType::Direct, ptr::addr_of_mut!(LIST.0) as *mut c_void);
+    sceGuStart(GuContextType::Direct, list());
     // 16-bit colour with ordered dither: half the memory traffic of 32-bit per pixel written.
     sceGuDrawBuffer(DisplayPixelFormat::Psm5650, ptr::null_mut(), 512);
     sceGuDispBuffer(480, 272, FB_BYTES as *mut c_void, 512);
@@ -271,7 +279,7 @@ const BACKDROP: u32 = 0xff11_0c09;
 
 /// A frame of the interface alone, shown at once: the pack is loading, or it could not be.
 pub unsafe fn interlude(ui: &Ui) {
-    sceGuStart(GuContextType::Direct, ptr::addr_of_mut!(LIST.0) as *mut c_void);
+    sceGuStart(GuContextType::Direct, list());
     sceGuClearColor(BACKDROP);
     sceGuClear(ClearBuffer::COLOR_BUFFER_BIT);
     sceGuDisable(GuState::DepthTest);
@@ -556,7 +564,7 @@ impl Gfx {
         }
         let mut budget = MIX_BUDGET;
 
-        sceGuStart(GuContextType::Direct, ptr::addr_of_mut!(LIST.0) as *mut c_void);
+        sceGuStart(GuContextType::Direct, list());
         let haze = abgr(light.horizon);
         sceGuClearColor(haze);
         sceGuClearDepth(0);
