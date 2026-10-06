@@ -1,0 +1,74 @@
+{
+  "tagline": "A flight over Shiba, around Tokyo Tower.",
+  "description": [
+    "Pocket Tokyo is a flight over Shiba, the part of Minato around Tokyo Tower: three kilometres across, from Roppongi and Azabudai to Hamamatsucho and the bay. The city is the real one. Its 14,753 buildings come from Project PLATEAU, the open 3D city model of Japan's Ministry of Land, Infrastructure, Transport and Tourism, with roads and railways © OpenStreetMap contributors and heights from the Geospatial Information Authority of Japan.",
+    "You fly with the stick, or let the tour carry you round the tower. The clock runs while you fly: the sun crosses the sky, the shadows turn with it, and the windows and the street lamps come on at dusk. You can turn the clock to any hour by hand.",
+    "It runs on PS Vita, PSP, Nintendo 3DS, iPod touch and Android. Each device has its own renderer and its own pack of the city, compiled for what its GPU draws: 60 frames a second on a PS Vita, an iPod touch and an Android phone, 30 on a PSP and a 3DS.",
+    "The browser version draws the iPod touch build's city inside the shell of any of four handhelds."
+  ],
+  "media": [
+    {
+      "kind": "video",
+      "file": "tower.mp4",
+      "poster": "tower.jpg",
+      "width": 960,
+      "height": 544,
+      "seconds": 22,
+      "from": "browser",
+      "caption": "The tour goes round Tokyo Tower as evening falls: the sun sets, then the street lamps and the windows come on."
+    },
+    {
+      "kind": "video",
+      "file": "bay.mp4",
+      "poster": "bay.jpg",
+      "width": 960,
+      "height": 544,
+      "seconds": 18,
+      "from": "browser",
+      "caption": "An afternoon flight east: past the tower, over Zojo-ji, along the avenue through Daimon to the garden at Hamamatsucho and the bay."
+    },
+    {
+      "kind": "video",
+      "file": "sunrise.mp4",
+      "poster": "sunrise.jpg",
+      "width": 960,
+      "height": 544,
+      "seconds": 12,
+      "from": "browser",
+      "caption": "Looking east past the tower while the clock runs from 5:20 to 8:00: the lamps go out and the sun comes up over the bay."
+    },
+    {
+      "kind": "image",
+      "file": "zojoji.jpg",
+      "width": 960,
+      "height": 544,
+      "from": "browser",
+      "caption": "Tokyo Tower over the roofs of Zojo-ji, half an hour before sunset."
+    },
+    {
+      "kind": "image",
+      "file": "lattice.jpg",
+      "width": 960,
+      "height": 544,
+      "from": "browser",
+      "caption": "Tokyo Tower from 120 metres up: a lattice of 1,412 beams, decks and lamps."
+    },
+    {
+      "kind": "image",
+      "file": "hamamatsucho.jpg",
+      "width": 960,
+      "height": 544,
+      "from": "browser",
+      "caption": "Kyu-Shiba-rikyu Garden and the railway at Hamamatsucho, with the tower behind the office blocks."
+    },
+    {
+      "kind": "image",
+      "file": "night.jpg",
+      "width": 960,
+      "height": 544,
+      "from": "browser",
+      "caption": "The tower floodlit at half past six in the evening, from the west."
+    }
+  ],
+  "card": "card.jpg"
+}

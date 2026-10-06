@@ -274,6 +274,30 @@ For each target the tool cooks the profile's pack from `.pocket-build/city/shiba
 
 **Packages go to Pocket Studio and to no page on GitHub.** `--upload` runs `pocket-studio package <file> --target <id> --version <version>` for each package from the repository's root, where `pocket-studio register --title "Pocket Tokyo"` wrote `.pocket-studio.json` (ignored by Git). It refuses a checkout with uncommitted changes. It does not register the game, publish it or change its address; when the link file is missing it prints the commands that write it. `--no-build --upload` sends the packages `release.json` lists, after checking their hashes.
 
+## The listing
+
+`bun tools/listing.ts` films what the game's page on Pocket Studio shows and writes it to `dist/listing/`, which Git ignores:
+
+```
+bun tools/listing.ts [--only FILE] [--upload]
+```
+
+- **The words are `listing/listing.json`, in Git**: one sentence, the paragraphs, and for each clip and still its file, its size in pixels, what drew it (`from`) and a caption. The description credits the city's sources ([Attribution](#attribution)). The tool stops when the JSON names a file it has no take for, or when it has a take the JSON does not name.
+- **The pictures are filmed from the game.** `wgpu/src/bin/film.rs` (`tokyo-film`) runs the browser tab's renderer on this machine's GPU, at the PS Vita's 960 × 544 with four samples a pixel, and writes one frame for each line of a list of the development host's words. The flight advances two sixtieths of a second a frame, and a frame is drawn again until every cell near the eye and every block's picture has been read, so no frame shows a cell on its way. `tools/listing.ts` writes the lists and hands the frames to ffmpeg.
+- **A clip is the tour from a second of its route, or an eye carried through a row of points**, with the clock at an hour and running at a rate. A carried eye keeps over open ground and streets, as the flight's own keeps out of the buildings. A clip is H.264 at 30 frames a second with no sound, with a fade of ten frames at each end so that it loops through a dip, held under 12 MiB by a ceiling on its rate; its poster is that frame filmed again, as a JPEG.
+
+| File | What it shows | Length |
+| --- | --- | --- |
+| `tower.mp4` | the tour round Tokyo Tower from its second 15, the clock from 17:03 to 18:48: the sun sets at 17:45 and the lamps and the rooms come on | 22 s |
+| `bay.mp4` | an eye from Azabudai past the tower, over Zojo-ji and above the avenue through Daimon to Kyu-Shiba-rikyu Garden, the clock from 15:30 | 18 s |
+| `sunrise.mp4` | one view to the east past the tower, the clock from 5:20 to 8:00, with sunrise at 6:15 | 12 s |
+| `zojoji.jpg`, `lattice.jpg`, `hamamatsucho.jpg`, `night.jpg` | the tower over Zojo-ji at 17:15, the tower from 120 m at 14:00, the garden and the railway at Hamamatsucho at 11:00, the tower at 18:30 | |
+| `card.jpg` | the share picture a link preview carries: the tower at 17:52, 1200 × 630, with no text on it | |
+
+Eleven files, 19.8 MiB. **Two runs gave the same bytes for every file**: the reads come from the pack's file, the shadows are swept in the frame that asks for them, and no clock of the machine enters a frame.
+
+It needs the iPod touch's pack (`bun tools/wgpu.ts cook`), ffmpeg and ffprobe. `--upload` runs `pocket-studio listing dist/listing` from the repository's root, where `pocket-studio register` wrote `.pocket-studio.json`; `POCKET_STUDIO_CLI` names the command when it is not on `PATH`. No picture goes to Git or to a GitHub release: a picture of the city is made from the compiled area and keeps its sources' terms, as a pack does.
+
 ## Attribution
 
 3D city model, roof photos, bridges and street furniture: Project PLATEAU (MLIT Japan). Elevation and aerial photos: Geospatial Information Authority of Japan (GSI). Road network, railways and places: © OpenStreetMap contributors (ODbL); a compiled area is a derived database under the ODbL. Textures: Poly Haven (CC0). Trees: ez-tree (MIT). The model in `web/` is [Procedural Tokyo](https://github.com/jeantimex/tokyo) by Yong Su, under the MIT License (`web/LICENSE`).

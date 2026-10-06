@@ -23,6 +23,10 @@ crate-type = ["cdylib", "rlib"]
 name = "tokyo-shot"
 path = "src/bin/shot.rs"
 
+[[bin]]
+name = "tokyo-film"
+path = "src/bin/film.rs"
+
 [dependencies]
 tokyo-core = { path = "core" }
 tokyo-pack = { path = "../crates/tokyo-pack", default-features = false }
