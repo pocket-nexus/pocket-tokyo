@@ -1,17 +1,69 @@
 # Pocket Tokyo on the Redmi 1S
 
-An Android app for the Redmi 1S (`armani`: MIUI V5, Android 4.3, Snapdragon 400, Adreno 305): the city in the panel's own 1280 × 720 pixels, OpenGL ES 3.0, a frame a refresh. The phone has a touch panel and three keys under it, so the city is flown through the interface's touch presentation at 640 × 360 with two pixels a point (`ui/app/main-touch-wide.tsx`): a stick, three keys, a finger on the city to turn the view, the clock as a bar to drag. The back key opens the menu and closes it. The shell draws no 2D of its own.
+An Android app, built for and measured on the Redmi 1S (`armani`: MIUI V5, Android 4.3, Snapdragon 400, Adreno 305): the city in the panel's own 1280 × 720 pixels, OpenGL ES 3.0, a frame a refresh. **The same package installs on a 64-bit phone with a current Android** ([The package](#the-package)), where the picture keeps its 16:9 in a window of another shape ([A window of another shape](#a-window-of-another-shape)). The phone has a touch panel and three keys under it, so the city is flown through the interface's touch presentation at 640 × 360 with two pixels a point (`ui/app/main-touch-wide.tsx`): a stick, three keys, a finger on the city to turn the view, the clock as a bar to drag. The back key opens the menu and closes it. The shell draws no 2D of its own.
 
 The package is one `NativeActivity` (`dev.pocketnexus.tokyo`, "Pocket Tokyo"): no Java, and the pack inside it.
 
 | Part | What it is |
 | --- | --- |
-| `core/` | A Rust static library (`std`, `armv7-linux-androideabi`): the pack, the OpenGL ES 3.0 programs and buffers, what a frame draws (`tokyo_sim::view::select`), the shadows' sweep on a thread, the traffic, the flight and the flow around it (`tokyo_interface::Session`), the governor, the title card's frames, and the interface's channel. Behind the `tk_*` functions of `src/core.h`. |
+| `core/` | A Rust static library (`std`; `armv7-linux-androideabi` and `aarch64-linux-android`): the pack, the OpenGL ES 3.0 programs and buffers, what a frame draws (`tokyo_sim::view::select`), the shadows' sweep on a thread, the traffic, the flight and the flow around it (`tokyo_interface::Session`), the governor, the title card's frames, and the interface's channel. Behind the `tk_*` functions of `src/core.h`. |
 | `shaders/` | Nine GLSL ES 3.00 sources: the ground and roofs, walls, painted geometry, cars, the sky. |
-| `src/main.c` | The shell: the window and its EGL surface, the touches, the title card's presentation, the PocketJS guest and its draw over the city, the control and status files, the GPU's timer. |
-| `src/loader.c` | What `NativeActivity` loads. It hands the activity to the engine, a library of its own, so a development run replaces the engine without an install. |
-| `src/bionic18.c` | Five functions Rust's standard library links against that Android 4.3's C library lacks. |
+| `src/main.c` | The shell: the window and its EGL surface, the picture's rectangle in it, the touches, the title card's presentation, the PocketJS guest and its draw over the city, the control and status files, the GPU's timer, the pace of 60 frames a second. |
+| `src/loader.c` | What `NativeActivity` loads. It hands the activity to the engine, a library of its own, so a development run replaces the engine without an install. On Android 4.4 and later it asks the system to hide its bars. |
+| `src/bionic18.c` | Five functions Rust's standard library links against that Android 4.3's C library lacks. It is in the `armeabi-v7a` engine alone. |
 | `tools/android.ts` | doctor, cook, build, package, install, replace, launch, drive, capture, bench. It compiles `ui/` for the phone (`tools/ui.ts android`) and builds PocketJS's UI core (OpenGL ES 2 draw-list backend), QuickJS and the guest driver into the engine. |
+
+## The package
+
+**One APK: `minSdkVersion` 18, `targetSdkVersion` 34, the engine and the loader for two ABIs.** Android 14 installs no package that targets less than 23 (`INSTALL_FAILED_DEPRECATED_SDK_VERSION`), and Android 15 none under 24; a phone with a 64-bit-only system loads no `armeabi-v7a` library. Both sets come from NDK 21.4.7075529 and Rust `nightly-2026-07-02` (`ABIS` in `tools/android.ts`).
+
+| | `lib/armeabi-v7a` | `lib/arm64-v8a` |
+| --- | --- | --- |
+| Loaded by | the Redmi 1S | a 64-bit phone |
+| C and linker | `armv7a-linux-androideabi18-clang`, `-mcpu=cortex-a7 -mfpu=neon-vfpv4 -mfloat-abi=softfp -mthumb` | `aarch64-linux-android21-clang` |
+| Rust | `armv7-linux-androideabi`, `-C target-cpu=cortex-a7 -C target-feature=+neon,+vfp4` | `aarch64-linux-android` |
+| C library | API 18 (Android 4.3), with the five functions of `src/bionic18.c` | API 21 (Android 5.0), the first with 64-bit libraries |
+| Segments | aligned to 4 KB | **aligned to 16 KB** (`-Wl,-z,max-page-size=16384`): a phone with 16 KB pages loads no library aligned to 4 KB. The tool reads each library's `LOAD` segments back with `llvm-readelf` and stops on another alignment |
+| Engine, loader | 2 001 108 and 5 568 bytes | 2 522 144 and 5 736 bytes |
+
+What a target of 34 asks of a `NativeActivity` with `android:hasCode="false"`, and where each answer is:
+
+- **`android:exported="true"`** on the activity: a package that targets 31 or more states it for every activity with an intent filter.
+- **The resource table is stored, not deflated** (`aapt -0 arsc`): Android 11 and later install a package that targets 30 or more with `resources.arsc` stored and aligned to 4 bytes.
+- **The system's bars.** `Theme.NoTitleBar.Fullscreen` hides the status bar and leaves the navigation bar, which a current Android draws over the window. `whole_screen` in `src/loader.c` calls `View.setSystemUiVisibility` on the window's decor view through JNI with the sticky immersive flags (0x1706), when the activity is created and each time its window takes the focus, on Android 4.4 and later. Both calls run on the UI thread, which is the thread the loader's functions run on. A swipe from an edge shows the bars for a moment. The Redmi 1S (API 18, keys under the panel) is not asked.
+- **The display's cutout.** The package sets no cutout mode, and the system's default keeps a window held on its side clear of the cutout: on a 2400 × 1080 screen with a 136-pixel cutout the window is 2264 × 1080.
+- **Storage and permissions.** The package asks for no permission. The app reads `city.pack`, `tokyo.js` and `tokyo.pak` from its own assets and reads and writes `interface.json`, `status.json` and the control file in its own files directory (`internalDataPath`). The status adds three reads: `/proc/self/statm`, `/sys/class/kgsl/kgsl-3d0/gpuclk` and `/sys/class/thermal/thermal_zone0/temp`. A current Android refuses the last two: the status says -1 and the shell asks for each file once.
+- **Changes of configuration.** The activity names `orientation`, `screenSize`, `screenLayout`, `smallestScreenSize`, `density`, `uiMode`, `keyboard`, `keyboardHidden` and `navigation` in `android:configChanges`: a change that is not named destroys the activity, and the process ends with its activity. `android:resizeableActivity="false"` keeps it out of a split screen.
+- **The engine's path.** Android 4.3 links the package's libraries at `lib` beside the app's files, and the loader opens the engine there. A current Android keeps no such link, and the loader then opens `libtokyo-engine.so` by name, which the system looks up in the package's own library directory.
+
+The 64-bit engine is the same C and Rust source. The pack's tables are `repr(C)` records of fixed-width numbers (`crates/tokyo-pack`), read with `read_unaligned`; offsets into the pack are 64 bits (`pread64`); the status takes the size of a page from `sysconf`.
+
+## A window of another shape
+
+**The picture is 16:9: the largest 16:9 rectangle about the middle of the window's buffer (`view` in `src/main.c`), with black beside it.** A 1280 × 720 window is all picture. A 2400 × 1080 window gives a picture of 1920 × 1080 with 240 pixels of black at each side.
+
+| What | How it goes through the rectangle |
+| --- | --- |
+| The title card | `tk_card` draws its frames at the rectangle's size, and the texture is shown in a viewport of that rectangle. The art is 624 × 192 pixels on a picture of any size at least 900 wide |
+| The city | `tk_window(x, y, width, height)` hands the core the rectangle: the projection's aspect is its width over its height and `glViewport` is the rectangle |
+| The interface | `ui_gl_render_over` takes the rectangle as its target. The interface is 640 × 360 logical with glyphs rastered at two pixels a point; in a 1920 × 1080 picture PocketJS's UI core draws them at three |
+| A finger | A place on the panel becomes a place in the picture (`across`, `down`), and PocketJS's contact latch takes the rectangle's size. A finger that comes down beside the picture is no contact |
+| The loading screen | Black over the whole buffer, then the card's ground in a scissor of the rectangle |
+
+The shell reads the surface's size in each of the first eight frames and twice a second after them, and places the picture anew when the system has given the window another size.
+
+**On the Redmi 1S the rectangle is the whole buffer and every call has the values it had.** A held frame (`ctl "ui=fly"`, `ctl "tour=0 rate=0 hour=13 traffic=0 near=300 mid=1300 view=707,325,924,0,150,0"`, then `capture`), without the interface (`interface=0`) and with it, from the build before this rectangle (`c19651a7acfd`) and from the build with it (`f8ced8ba1868`): **0 of 921 600 pixels differ**.
+
+On the Android 16 emulator (arm64, 1080 × 2400 with a 136-pixel cutout, the host's GPU through its OpenGL ES translator), the window is 2264 × 1080 and the picture 1920 × 1080 at 172 pixels from its left edge; a tap on "Fly yourself" at the row's place on the screen starts the flight, and a tap in the black beside the picture does nothing.
+
+**The flight takes one tick a frame, at 60 frames a second.** A panel that refreshes at 90, 120 or 144 Hz hands a frame back in less than a sixtieth of a second. Two parts keep the pace:
+
+- The window states its rate: `ANativeWindow_setFrameRate(window, 60, default)`, which Android 11 and later take into their choice of the panel's refresh. The function is looked up in `libandroid.so` at run time; Android 4.3 has none.
+- `pace` in `src/main.c` counts frames that come back within 0.85 of a sixtieth of a second after the one before (up by one for such a frame, down by one for another, to 60 at most). From 30 each such frame waits for its sixtieth. A 60 Hz panel hands back two or three such frames after a late one, so the count stays under 30 there: in the 150 s bench on the Redmi 1S `paced` is false in every status.
+
+`bun tools/android.ts boot "interval=0"` sets the swap interval to 0 for a development run, which hands every frame back at once where the system honours it. On the emulator with it, `eglSwapBuffers` takes 0.24 ms, `paced` is true, 59.9 frames a second are shown and the tour advances 0.998 s a second; with the interval at 1, 59.9 frames and 0.998 s, `paced` false. The Redmi 1S's driver waits for the refresh at either interval. **No phone with a panel faster than 60 Hz has run this.**
+
+**The governor needs the driver's timer.** Without `EXT_disjoint_timer_query` (the emulator has none) the GPU's time reads 0, the scale stays at 1 and the levels of detail stay at 300 m and 1 300 m: 134 300 to 155 100 triangles a frame in the tour's first seconds. The band of 11 to 13 ms is the Adreno 305's; no other GPU has been measured.
 
 ## What the phone charges for
 
@@ -49,6 +101,8 @@ Measured in this app on the phone, with the driver's own timer for a frame (`gpu
 
 The bench before the merge with `main` (build `3718ab794741`, the SoC at 57 to 59 °C from its start): 8 937 frames, 73 late (0.82 %), worst 45.4 ms, mean 66 800 triangles.
 
+The bench of the package with two ABIs and a target of 34 (build `f8ced8ba1868`; the SoC at 43 °C and one core online before the launch, 55 to 61 °C through the bench, 61 °C and two cores at 1.6 GHz at its end, battery 33.0 to 34.9 °C): **8 969 frames, 32 late (0.36 %)**, worst 37.2 ms, mean 16.73 ms; all 32 over the 15 s from 17:37 to 18:04 (2, 15 and 15 by three statuses); 46 300 to 96 500 triangles a frame, mean 66 600; 135 draws; the GPU's timer 11.0 to 16.4 ms, mean 12.4 ms; the governor's scale 0.25 to 0.79, mean 0.35. The CPU's clock did not come down to 1.0 GHz in this run.
+
 A late frame's parts go to the log in a development run. Of those read: the GPU over 14 ms; a wait of 19 to 29 ms in `eglSwapBuffers` with the GPU at 12 to 13 ms; a collection of the guest's heap (25.6 ms); a draw of the interface of 7 to 11 ms. While those ran the phone had 72 MB free, 270 MB in swap and 16 % of its time waiting for the disk.
 
 ## The pack
@@ -69,8 +123,8 @@ The guest boots next (`tokyo.js`, `tokyo.pak`), so the step "Reading the city" i
 ## The frame
 
 1. `tk_step`: what the interface asked for since the last frame (`start`, `tour`, `hour`, `drive`, `look`, …), then one tick of the flight and the traffic per display refresh.
-2. The guest's turn, on the frames `tk_guest_due` says it is worth one: the contacts go in (PocketJS's contact latch, the panel's pixels turned to the interface's 640 × 360), commands are left for the next `tk_step`.
-3. `tk_draw`, straight into the window's buffer, which is cleared first so that no tile is read back: the walls, painted geometry and the landmark, the ground and roofs, the cars, and the sky last, over what nothing else covered.
+2. The guest's turn, on the frames `tk_guest_due` says it is worth one: the contacts go in (PocketJS's contact latch, the picture's pixels turned to the interface's 640 × 360), commands are left for the next `tk_step`.
+3. `tk_draw`, straight into the window's buffer (the picture's rectangle of it), which is cleared first so that no tile is read back: the walls, painted geometry and the landmark, the ground and roofs, the cars, and the sky last, over what nothing else covered.
 4. The interface over it (`ui_gl_render_over`), then `eglSwapBuffers`.
 
 The programs:
@@ -91,7 +145,7 @@ bun tools/android.ts doctor
 bun tools/android.ts cook
 bun tools/android.ts install          # the package: 147 MB; MIUI's two questions on the phone are answered by the tool
 bun tools/android.ts native [--pack]  # replace the engine and the interface (and the pack) in the app's data: no install
-bun tools/android.ts boot "samples=2" # words the next development launch reads: samples= width= height= title=0
+bun tools/android.ts boot "samples=2" # words the next development launch reads: samples= width= height= interval= title=0
 bun tools/android.ts launch
 bun tools/android.ts ctl "ui=fly hour=19 rate=0 view=707,325,924,0,150,0"
 bun tools/android.ts ctl "touch=86,274;584,210"   # a thumb on the stick, one on UP
@@ -100,8 +154,8 @@ bun tools/android.ts bench --seconds 150
 bun tools/android.ts reset [--dev]    # stop the app and remove the settings it kept (and the development copies)
 ```
 
-`native` puts `libtokyo-engine.so`, `tokyo.js`, `tokyo.pak` (and `city.pack`) into `files/dev` of the app's data through `run-as`, which the package allows (`android:debuggable`); the loader and the shell take a file from there before the package's own. `install` removes `files/dev`, so an installed package runs as installed.
+`native` puts `libtokyo-engine.so` of the phone's own ABI (`getprop ro.product.cpu.abi`), `tokyo.js`, `tokyo.pak` (and `city.pack`) into `files/dev` of the app's data through `run-as`, which the package allows (`android:debuggable`); the loader and the shell take a file from there before the package's own. `install` removes `files/dev`, so an installed package runs as installed.
 
-`ctl` words go to the flow (`mode=title|flight|menu`, `ui=tour|fly|menu|resume|title`), to the flight (`tour= restart= at= hour= rate= budget= reach=a,b near= mid= sectors= view=x,y,z,tx,ty,tz[,fov] view=off fly=…`), to the renderer (`band=A,B haze= lamps= top= wall= solid= sky= shadow= unordered= tiny= cull= winding=`) and to the shell: `touch=X,Y[;X,Y]` holds fingers on the panel in the interface's pixels and `touch=off` lifts them, `tap=X,Y` is one finger for a few turns, `screen=1` writes the frame as drawn, `interface=0` leaves the interface out, `profile=1` waits for the GPU in every frame, `mark=SECONDS` measures.
+`ctl` words go to the flow (`mode=title|flight|menu`, `ui=tour|fly|menu|resume|title`), to the flight (`tour= restart= at= hour= rate= budget= reach=a,b near= mid= sectors= view=x,y,z,tx,ty,tz[,fov] view=off fly=…`), to the renderer (`band=A,B haze= lamps= top= wall= solid= sky= shadow= unordered= tiny= cull= winding=`) and to the shell: `touch=X,Y[;X,Y]` holds fingers on the picture in the interface's pixels and `touch=off` lifts them, `tap=X,Y` is one finger for a few turns, `screen=1` writes the frame as drawn, `interface=0` leaves the interface out, `profile=1` waits for the GPU in every frame, `mark=SECONDS` measures.
 
-The status (`files/status.json`, written twice a second by a thread of its own) carries the frames shown and how many refreshes went without a new one, the render thread's milliseconds by what it did, the GPU's own time for a frame (`gpuTimerMs`, from `EXT_disjoint_timer_query`: it leaves the frame's pace alone, where waiting for the GPU does not), the GPU's clock and the SoC's temperature. A development run writes each late frame to the log with what it was made of (`adb logcat -s PocketTokyo`).
+The status (`files/status.json`, written twice a second by a thread of its own) carries the window's buffer and the picture in it (`buffer`, `view`), whether frames wait for their sixtieth (`paced`), the frames shown and how many refreshes went without a new one, the render thread's milliseconds by what it did, the GPU's own time for a frame (`gpuTimerMs`, from `EXT_disjoint_timer_query`: it leaves the frame's pace alone, where waiting for the GPU does not), the GPU's clock and the SoC's temperature. A development run writes each late frame to the log with what it was made of (`adb logcat -s PocketTokyo`).

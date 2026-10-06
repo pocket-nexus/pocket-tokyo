@@ -1,13 +1,24 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- Pocket Tokyo as an Android app: one NativeActivity, no Java. tools/android.ts
-     fills in the version and `debuggable`: true lets a development run replace
-     the engine and the pack in the app's own data through run-as; a release
-     package is false. -->
+     fills in the version, the two SDK levels and `debuggable`: true lets a
+     development run replace the engine and the pack in the app's own data
+     through run-as; a release package is false.
+
+     minSdkVersion 18 is Android 4.3, the Redmi 1S's. targetSdkVersion 34:
+     Android 14 installs no package that targets less than 23. An activity
+     with an intent filter in a package that targets 31 or more says whether
+     it is exported. The package asks for no permission: it reads its own
+     assets and writes its own files.
+
+     The activity is held on its side and is not resized: the shell draws a
+     16:9 picture in the middle of whatever window it is given. The changes
+     of configuration named here reach the shell as they are; one that is not
+     named would destroy the activity, and the process ends with it. -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="dev.pocketnexus.tokyo"
     android:versionCode="@VERSION_CODE@"
     android:versionName="@VERSION_NAME@">
-    <uses-sdk android:minSdkVersion="18" android:targetSdkVersion="18" />
+    <uses-sdk android:minSdkVersion="@MIN_SDK@" android:targetSdkVersion="@TARGET_SDK@" />
     <uses-feature android:glEsVersion="0x00030000" android:required="true" />
     <uses-feature android:name="android.hardware.touchscreen.multitouch" android:required="true" />
     <application
@@ -18,9 +29,11 @@
         android:label="Pocket Tokyo">
         <activity
             android:name="android.app.NativeActivity"
-            android:configChanges="orientation|keyboardHidden|screenSize"
+            android:configChanges="orientation|keyboardHidden|screenSize|keyboard|navigation|screenLayout|smallestScreenSize|uiMode|density"
+            android:exported="true"
             android:label="Pocket Tokyo"
             android:launchMode="singleTask"
+            android:resizeableActivity="false"
             android:screenOrientation="landscape"
             android:theme="@android:style/Theme.NoTitleBar.Fullscreen">
             <meta-data android:name="android.app.lib_name" android:value="tokyo" />

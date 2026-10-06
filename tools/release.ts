@@ -14,7 +14,7 @@
 //   psp         pocket-tokyo-<version>-psp.zip    PSP/GAME/PocketTokyo/, for the root of a Memory Stick
 //   3ds         pocket-tokyo-<version>.3dsx       the pack and the interface in its ROMFS
 //   ipod-touch  pocket-tokyo-<version>-ipod.ipa   Payload/PocketTokyo.app
-//   android     pocket-tokyo-<version>.apk        the app for Android 4.3 and later on ARMv7, the pack inside, signed with the release key
+//   android     pocket-tokyo-<version>.apk        the app for Android 4.3 and later (armeabi-v7a and arm64-v8a, target SDK 34), the pack inside, signed with the release key
 //
 // and release.json beside them: the commit, the version (ui/pocket.json),
 // each file's size and SHA-256, the inputs and the toolchains. A target that

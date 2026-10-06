@@ -25,8 +25,8 @@ void tk_prefs_stored(const char *text, uint32_t length);
 uint32_t tk_prefs_take(char *out, uint32_t capacity);
 uint32_t tk_guest_due(uint32_t buttons, uint32_t touching);
 uint32_t tk_interface_open(void);
-// The window's size in pixels.
-void tk_window(uint32_t width, uint32_t height);
+// The picture in the window's buffer: the lower left corner and the size of the rectangle the city is drawn into, in pixels.
+void tk_window(int32_t x, int32_t y, uint32_t width, uint32_t height);
 // One step of reading the pack at `offset` of `fd`: 0 more to do, 1 the city is ready, -1 it failed.
 int32_t tk_load(int fd, int64_t offset, int64_t length, char *message, uint32_t capacity);
 void tk_step(uint32_t ticks);
