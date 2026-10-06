@@ -158,6 +158,8 @@ function serveDist(port: number) {
     hostname: "127.0.0.1",
     fetch(request) {
       const path = decodeURIComponent(new URL(request.url).pathname);
+      // (this host names no address for it: a page that asks is heard, and the check says so)
+      if (path === OPENED) opens.push({ query: new URL(request.url).search, mode: request.headers.get("sec-fetch-mode") ?? "" });
       const file = join(DIST, path === "/" ? "index.html" : path);
       if (!file.startsWith(DIST) || !existsSync(file) || !statSync(file).isFile()) return new Response("not found", { status: 404 });
       const type = file.split(".").pop()!;
@@ -170,8 +172,11 @@ const TYPES: Record<string, string> = { html: "text/html; charset=utf-8", js: "t
 
 /**
  * What a game's host of Pocket Studio answers at `/app.json`, for the server here: the player reads the
- * game's name and its packages from it. (The sizes are those of release 0.1.0's packages.)
+ * game's name and its packages from it, and the address it tells that it opened (`opened`, which the
+ * server here answers itself and counts). (The sizes are those of release 0.1.0's packages.)
  */
+const OPENED = "/api/events/player";
+const opens: { query: string; mode: string }[] = [];
 const APP = {
   kind: "site", id: "local", slug: null, url: null, title: "Pocket Tokyo", author: "local", tagline: "A flight over Shiba, around Tokyo Tower.", verified: true, status: "published",
   packages: [{ target: "psp", filename: "pocket-tokyo-0.1.0-psp.zip", size: 42_934_596, version: "0.1.0" }, { target: "3ds", filename: "pocket-tokyo-0.1.0.3dsx", size: 32_037_912, version: "0.1.0" }],
@@ -185,7 +190,11 @@ function serve(port: number) {
     hostname: "127.0.0.1",
     fetch(request) {
       const path = decodeURIComponent(new URL(request.url).pathname);
-      if (path === "/app.json") return Response.json(APP, { headers: { "Cache-Control": "no-store" } });
+      if (path === "/app.json") return Response.json({ ...APP, opened: new URL(OPENED, request.url).href }, { headers: { "Cache-Control": "no-store" } });
+      if (path === OPENED) {
+        opens.push({ query: new URL(request.url).search, mode: request.headers.get("sec-fetch-mode") ?? "" });
+        return new Response(null, { status: 204 });
+      }
       if (path === "/city.pack") {
         const head = { "Accept-Ranges": "bytes", "Content-Type": "application/octet-stream", "Cache-Control": "no-store" };
         const range = request.headers.get("range")?.match(/^bytes=(\d+)-(\d*)$/);
@@ -605,9 +614,14 @@ if (command === "cook") {
         await first.page.close();
       }
       for (const id of SHOWN) {
+        const heard = opens.length;
         const p = await visit(`?device=${id}`, context);
         await p.up();
         const tag = `${window.name} ${id}`;
+        // The host is told once that a player opened, as this device: the host here names the address
+        // in /app.json; the deployable directory's names none, and its page tells no one.
+        const told = opens.slice(heard);
+        expect(`${tag}: the page tells the host once that a player opened (${JSON.stringify(told)})`, deployed ? told.length === 0 : told.length === 1 && told[0]!.query === `?app=local&layout=${id}` && told[0]!.mode === "no-cors");
         const cdp = await context.newCDPSession(p.page);
         // A pointer, or a finger, down on a place of the page; `then` runs while it is held.
         const held = async (x: number, y: number, then: () => Promise<void>, to?: [number, number]) => {
@@ -684,8 +698,8 @@ if (command === "cook") {
         // The door to Pocket Studio: the game's card there, and the Studio's own front door.
         const door = (await p.page.evaluate(`({ get: document.querySelector('[data-pocket-action=get]').href, make: document.querySelector('[data-pocket-action=make]').href, words: document.querySelector('[data-pocket-pitch]').textContent, shown: document.querySelector('[data-pocket-action=get]').getBoundingClientRect().width > 40 })`)) as Record<string, any>;
         report.player.door ??= door;
-        const card = deployed ? (deployed.studio ? `${deployed.studio.server}/studio/?app=${deployed.studio.app}` : "https://studio.pocket.nexus/") : "https://studio.pocket.nexus/studio/?app=local";
-        expect(`${tag}: the door leads to the game in Pocket Studio (${JSON.stringify(door)}, wanted ${card})`, door.shown && door.get === card && new URL(door.make).pathname === "/" && door.words.includes("Pocket Tokyo is built for PSP, PS Vita, Nintendo 3DS, iPod touch and Android."));
+        const card = deployed ? (deployed.studio ? `${deployed.studio.server}/studio/?app=${deployed.studio.app}&from=player` : "https://studio.pocket.nexus/?from=player") : "https://studio.pocket.nexus/studio/?app=local&from=player";
+        expect(`${tag}: the door leads to the game in Pocket Studio (${JSON.stringify(door)}, wanted ${card})`, door.shown && door.get === card && new URL(door.make).pathname === "/" && new URL(door.make).search === "?from=player" && door.words.includes("Pocket Tokyo is built for PSP, PS Vita, Nintendo 3DS, iPod touch and Android."));
         if (!deployed) expect(`${tag}: the door says what the host holds (${door.words})`, door.words.includes("Pocket Studio has its packages for PSP (43 MB) and Nintendo 3DS (32 MB)."));
 
         // From the title into a flight by the shell's own key, which goes down while it is held; then its
@@ -755,6 +769,7 @@ if (command === "cook") {
         await p.page.getByRole("button", { name: "Nintendo 3DS" }).click();
         await p.page.waitForFunction("document.querySelector('[data-pocket-shell]').dataset.pocketShell === '3ds' && !document.querySelector('[data-pocket-shell]').hasAttribute('data-loading') && pocketTokyo.interface()", undefined, { timeout: 20_000 });
         const after = (await p.page.evaluate(`[document.querySelector("[data-pocket-shell]").dataset.pocketShell, document.querySelector("[data-pocket-shell-art]").currentSrc.split("/").pop(), document.querySelector("[data-pocket-screen=lower]").hidden, document.querySelector('[data-pocket-choices] [aria-pressed=true]').textContent]`)) as unknown[];
+        expect(`${window.name}: a device picked later is the same visit (${JSON.stringify(opens.slice(-1))})`, deployed ? opens.length === 0 : opens.at(-1)!.query === "?app=local&layout=psp");
         expect(`${window.name}: a device picked from the bar comes in its own shell (${after})`, JSON.stringify(after) === JSON.stringify(["3ds", "3ds.webp", false, "Nintendo 3DS"]));
         // The line about the marks, reachable from the bar.
         await p.page.locator("[data-pocket-open=about]").click();
@@ -836,6 +851,7 @@ if (command === "cook") {
     await browser.close();
     server.stop(true);
     report.sizes = sizes;
+    report.opened = { reports: opens.length, last: opens.at(-1) ?? null };
     writeFileSync(join(directory, "report.json"), JSON.stringify(report, null, 1));
   }
   const { sizes: _, ...brief } = report;
