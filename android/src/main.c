@@ -1,4 +1,6 @@
-// Pocket Tokyo on the Redmi 1S (Android 4.3, Adreno 305): the shell.
+// Pocket Tokyo on Android: the shell. The phone it is measured on is the
+// Redmi 1S (Android 4.3, Adreno 305); the same source is built for a 64-bit
+// phone.
 //
 // One NativeActivity and one thread. It owns the window and its EGL surface,
 // the touches, the PocketJS guest that is the interface (QuickJS, PocketJS's UI
@@ -11,15 +13,22 @@
 // step, the guest's turn when it is worth one, the city straight into the
 // window's buffer, the interface over it, eglSwapBuffers.
 //
-// The window's buffers are the panel's own pixels a quarter turn over; the
-// driver draws turned and the display processor shows the buffer as an
-// overlay, so showing a frame costs the GPU nothing.
+// On the Redmi 1S the window's buffers are the panel's own pixels a quarter
+// turn over; the driver draws turned and the display processor shows the
+// buffer as an overlay, so showing a frame costs the GPU nothing.
+//
+// The picture is 16:9. A window of that shape is all picture (1280 × 720 on
+// the Redmi 1S); in a window of another shape the picture is the largest
+// 16:9 rectangle about its middle (`view`), with black beside it. The title
+// card, the city and the interface are drawn into that rectangle and a
+// finger is placed through it.
 #include <EGL/egl.h>
 #include <GLES3/gl3.h>
 #include <android/asset_manager.h>
 #include <android/log.h>
 #include <android/window.h>
 #include <android_native_app_glue.h>
+#include <dlfcn.h>
 #include <fcntl.h>
 #include <math.h>
 #include <pthread.h>
@@ -73,8 +82,10 @@ static EGLContext context = EGL_NO_CONTEXT;
 static EGLSurface surface = EGL_NO_SURFACE;
 static int width, height;   // the window's buffers
 static int panel_w, panel_h; // the window on the panel: what a touch is measured in
-static int samples = SAMPLES, buffer_w = BUFFER_WIDTH, buffer_h = BUFFER_HEIGHT;
-static bool resumed, skip_card, development;
+// The picture in the window's buffer, in its pixels from the lower left corner.
+static struct { int x, y, w, h; } view;
+static int samples = SAMPLES, buffer_w = BUFFER_WIDTH, buffer_h = BUFFER_HEIGHT, swap_interval = 1;
+static bool resumed, skip_card, development, paced;
 static char files[512], dev[560];
 
 static PocketContactLatch touches;
@@ -170,18 +181,48 @@ static bool open_pack(void) {
   return pack_fd >= 0;
 }
 
-static int read_number(const char *path) {
-  FILE *file = fopen(path, "r");
+// A number the kernel shows in a file, or -1. `gone`: the file could not be opened, and is not asked for
+// again (a current Android shows an app neither the GPU's clock nor the SoC's temperature, and writes
+// each refusal to the log).
+static int read_number(const char *path, bool *gone) {
+  FILE *file = *gone ? NULL : fopen(path, "r");
   int value = -1;
   if (file) {
     if (fscanf(file, "%d", &value) != 1)
       value = -1;
     fclose(file);
+  } else {
+    *gone = true;
   }
   return value;
 }
 
 // ---------------------------------------------------------------- the window
+
+// The picture: the largest 16:9 rectangle about the middle of the window's buffer. 1280 × 720 gives the
+// whole buffer; 2400 × 1080 gives 1920 × 1080 with 240 pixels of black at each side.
+static void fit(void) {
+  if (width * 9 >= height * 16) {
+    view.h = height;
+    view.w = height * 16 / 9;
+  } else {
+    view.w = width;
+    view.h = width * 9 / 16;
+  }
+  view.x = (width - view.w) / 2;
+  view.y = (height - view.h) / 2;
+  tk_window(view.x, view.y, (uint32_t)view.w, (uint32_t)view.h);
+}
+
+// A place on the panel as a place in the picture, in the picture's pixels from its upper left corner. The
+// window's buffer covers the window, whatever its size.
+static float across(float x) {
+  return x * ((float)width / (float)panel_w) - (float)view.x;
+}
+
+static float down(float y) {
+  return y * ((float)height / (float)panel_h) - (float)(height - view.y - view.h);
+}
 
 static bool make_surface(void) {
   if (display == EGL_NO_DISPLAY) {
@@ -212,12 +253,40 @@ static bool make_surface(void) {
     snprintf(failure, sizeof failure, "no OpenGL ES 3.0 context (EGL 0x%04x)", eglGetError());
     return false;
   }
-  eglSwapInterval(display, 1);
+  eglSwapInterval(display, swap_interval);
   eglQuerySurface(display, surface, EGL_WIDTH, &width);
   eglQuerySurface(display, surface, EGL_HEIGHT, &height);
-  tk_window((uint32_t)width, (uint32_t)height);
-  LOG("window %dx%d (panel %dx%d), %d samples, %s", width, height, panel_w, panel_h, samples, glGetString(GL_RENDERER));
+  // (buffers of the window's own size are the window's pixels, whatever it measured when it was first made)
+  if (!buffer_w && !buffer_h) {
+    panel_w = width;
+    panel_h = height;
+  }
+  fit();
+  // The flight takes one tick a frame at 60 frames a second. Android 11 and later take a window's own rate
+  // and choose the panel's refresh by it; the function is looked up, since Android 4.3's library has none.
+  void *system = dlopen("libandroid.so", RTLD_NOW);
+  int32_t (*rate)(ANativeWindow *, float, int8_t) = system ? (int32_t (*)(ANativeWindow *, float, int8_t))dlsym(system, "ANativeWindow_setFrameRate") : NULL;
+  if (rate)
+    rate(app->window, 60.0f, 0);
+  LOG("window %dx%d (panel %dx%d), picture %dx%d at %d,%d, %d samples, %s", width, height, panel_w, panel_h, view.w, view.h, view.x, view.y, samples, glGetString(GL_RENDERER));
   return true;
+}
+
+// The system gives the window another size (a phone unfolded, a first window made before the screen had
+// turned): the buffers follow at the next eglSwapBuffers, and the picture is placed again. A development
+// run's own buffer (`width=`, `height=`) keeps its size.
+static void resized(void) {
+  EGLint w = width, h = height;
+  if (buffer_w || buffer_h || surface == EGL_NO_SURFACE)
+    return;
+  eglQuerySurface(display, surface, EGL_WIDTH, &w);
+  eglQuerySurface(display, surface, EGL_HEIGHT, &h);
+  if (w == width && h == height)
+    return;
+  width = panel_w = w;
+  height = panel_h = h;
+  fit();
+  LOG("window %dx%d, picture %dx%d at %d,%d", width, height, view.w, view.h, view.x, view.y);
 }
 
 static void drop_surface(void) {
@@ -251,8 +320,8 @@ static void on_command(struct android_app *a, int32_t what) {
   }
 }
 
-// Fingers go to the interface: a contact per pointer, in the panel's pixels. The back key and the menu key
-// go to the flow.
+// Fingers go to the interface: a contact per pointer, in the picture's pixels. A finger that comes down
+// beside the picture is no contact. The back key and the menu key go to the flow.
 static int32_t on_input(struct android_app *a, AInputEvent *event) {
   (void)a;
   if (AInputEvent_getType(event) == AINPUT_EVENT_TYPE_MOTION) {
@@ -264,13 +333,13 @@ static int32_t on_input(struct android_app *a, AInputEvent *event) {
       pocket_contacts_cancel(&touches);
     } else if (what == AMOTION_EVENT_ACTION_MOVE) {
       for (size_t i = 0; i < count; i++)
-        pocket_contact_event(&touches, POCKET_TOUCH_MOVE, AMotionEvent_getPointerId(event, i), AMotionEvent_getX(event, i), AMotionEvent_getY(event, i), panel_w, panel_h);
+        pocket_contact_event(&touches, POCKET_TOUCH_MOVE, AMotionEvent_getPointerId(event, i), across(AMotionEvent_getX(event, i)), down(AMotionEvent_getY(event, i)), view.w, view.h);
     } else if (index < count) {
-      bool down = what == AMOTION_EVENT_ACTION_DOWN || what == AMOTION_EVENT_ACTION_POINTER_DOWN;
+      bool pressed = what == AMOTION_EVENT_ACTION_DOWN || what == AMOTION_EVENT_ACTION_POINTER_DOWN;
       bool up = what == AMOTION_EVENT_ACTION_UP || what == AMOTION_EVENT_ACTION_POINTER_UP;
-      if (down || up)
-        pocket_contact_event(&touches, down ? POCKET_TOUCH_DOWN : POCKET_TOUCH_UP, AMotionEvent_getPointerId(event, index), AMotionEvent_getX(event, index), AMotionEvent_getY(event, index),
-                             panel_w, panel_h);
+      if (pressed || up)
+        pocket_contact_event(&touches, pressed ? POCKET_TOUCH_DOWN : POCKET_TOUCH_UP, AMotionEvent_getPointerId(event, index), across(AMotionEvent_getX(event, index)),
+                             down(AMotionEvent_getY(event, index)), view.w, view.h);
     }
     return 1;
   }
@@ -364,27 +433,38 @@ static void show(void) {
 }
 
 // The Pocket3D title card, first at every launch and before anything of the city's is read or shown. The
-// frames are PocketJS's (the core draws each tick's, `tk_card`); they reach the window through a texture,
-// which is deleted when the card ends. The card follows the clock, so a slow frame skips a tick and the card
-// still takes its 2.4 seconds. One frame of it per call.
+// frames are PocketJS's (the core draws each tick's, `tk_card`), at the picture's size; they reach the window
+// through a texture, which is deleted when the card ends. The card follows the clock, so a slow frame skips a
+// tick and the card still takes its 2.4 seconds. One frame of it per call.
 static void card(void) {
   static uint8_t *pixels;
   static GLuint texture;
+  static int w, h;
   static double start;
   static uint32_t shown = UINT32_MAX;
+  if (pixels && (w != view.w || h != view.h)) {
+    // The window changed its size under the card: its frames are drawn for the new picture.
+    glDeleteTextures(1, &texture);
+    free(pixels);
+    pixels = NULL;
+    shown = UINT32_MAX;
+  }
   if (!pixels) {
-    pixels = malloc((size_t)width * (size_t)height * 4);
+    w = view.w;
+    h = view.h;
+    pixels = malloc((size_t)w * (size_t)h * 4);
     glGenTextures(1, &texture);
     glBindTexture(GL_TEXTURE_2D, texture);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
-    start = now();
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+    if (!start)
+      start = now();
   }
   uint32_t tick = (uint32_t)((now() - start) * 60.0);
-  uint32_t drawn = skip_card ? 0 : tk_card(pixels, (uint32_t)width, (uint32_t)height, tick, shown);
+  uint32_t drawn = skip_card ? 0 : tk_card(pixels, (uint32_t)w, (uint32_t)h, tick, shown);
   if (!drawn) {
     glDeleteTextures(1, &texture);
     free(pixels);
@@ -397,9 +477,9 @@ static void card(void) {
   if (drawn == 1) {
     shown = tick;
     glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
-    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
   }
-  glViewport(0, 0, width, height);
+  glViewport(view.x, view.y, view.w, view.h);
   glDisable(GL_DEPTH_TEST);
   glDisable(GL_BLEND);
   glDisable(GL_SCISSOR_TEST);
@@ -449,17 +529,20 @@ static void status(void) {
   FILE *statm = fopen("/proc/self/statm", "r");
   if (statm) {
     unsigned long pages = 0, resident = 0;
+    // (a page is 4 KB on the Redmi 1S and 16 KB on some current phones)
     if (fscanf(statm, "%lu %lu", &pages, &resident) == 2)
-      snprintf(memory, sizeof memory, "%lu", resident * 4096);
+      snprintf(memory, sizeof memory, "%lu", resident * (unsigned long)sysconf(_SC_PAGESIZE));
     fclose(statm);
   }
   static const char *const stages[] = {"card", "guest", "loading", "running", "failed"};
+  static bool no_clock, no_thermal;
   snprintf(extra, sizeof extra,
-           "\"build\":\"%s\",\"shell\":\"%s\",\"failure\":\"%s\",\"samples\":%d,\"panel\":[%d,%d],\"development\":%s,\"interface\":{\"up\":%s,\"error\":\"%s\",\"turnHz\":%d,\"turns\":%u,\"logical\":[%d,%d]},"
+           "\"build\":\"%s\",\"shell\":\"%s\",\"failure\":\"%s\",\"samples\":%d,\"panel\":[%d,%d],\"buffer\":[%d,%d],\"view\":[%d,%d,%d,%d],\"paced\":%s,\"development\":%s,\"interface\":{\"up\":%s,\"error\":\"%s\",\"turnHz\":%d,\"turns\":%u,\"logical\":[%d,%d]},"
            "\"gpuMs\":%.2f,\"gpuTimerMs\":%.2f,\"profile\":%s,\"residentBytes\":%s,\"glError\":%u,\"gpuClock\":%d,\"thermal\":%d,\"command\":\"%s\",\"captured\":\"%s\","
            "\"mark\":{\"frames\":%u,\"late\":%u,\"worstMs\":%.2f,\"meanMs\":%.3f}",
-           TOKYO_BUILD, stages[stage], failure, samples, panel_w, panel_h, development ? "true" : "false", guest ? "true" : "false", guest ? "" : pocket_runtime_error(), TURN_HZ, turns, LOGICAL_WIDTH,
-           LOGICAL_HEIGHT, gpu_ms, timer_ms, profile ? "true" : "false", memory, glGetError(), read_number("/sys/class/kgsl/kgsl-3d0/gpuclk"), read_number("/sys/class/thermal/thermal_zone0/temp"), command,
+           TOKYO_BUILD, stages[stage], failure, samples, panel_w, panel_h, width, height, view.x, view.y, view.w, view.h, paced ? "true" : "false", development ? "true" : "false", guest ? "true" : "false",
+           guest ? "" : pocket_runtime_error(), TURN_HZ, turns, LOGICAL_WIDTH, LOGICAL_HEIGHT, gpu_ms, timer_ms, profile ? "true" : "false", memory, glGetError(),
+           read_number("/sys/class/kgsl/kgsl-3d0/gpuclk", &no_clock), read_number("/sys/class/thermal/thermal_zone0/temp", &no_thermal), command,
            captured, mark.done_frames, mark.done_late, mark.done_worst, mark.done_mean);
   for (char *c = extra; *c; c++)
     if (*c == '\n' || *c == '\r' || *c == '\t')
@@ -473,7 +556,7 @@ static void status(void) {
 }
 
 // A word of a control message that is this shell's:
-//   touch=X,Y[;X,Y…]  fingers held on the panel, in the interface's pixels; touch=off lifts them
+//   touch=X,Y[;X,Y…]  fingers held on the picture, in the interface's pixels; touch=off lifts them
 //   tap=X,Y           one finger down for a few turns
 //   screen=1          writes the next frame, as drawn, to files/screen.rgba (rows from the bottom)
 //   interface=0       leaves the interface out of the frame (its turns go on), for measurements
@@ -489,8 +572,8 @@ static void host_word(const char *word) {
       if (end == at || *end != ',')
         break;
       float y = strtof(end + 1, &end);
-      fingers.at[fingers.count][0] = x * (float)panel_w / LOGICAL_WIDTH;
-      fingers.at[fingers.count][1] = y * (float)panel_h / LOGICAL_HEIGHT;
+      fingers.at[fingers.count][0] = x * (float)view.w / LOGICAL_WIDTH;
+      fingers.at[fingers.count][1] = y * (float)view.h / LOGICAL_HEIGHT;
       fingers.count++;
       if (*end != ';')
         break;
@@ -534,7 +617,9 @@ static void control(void) {
 }
 
 // What a development run set for the launch: files/dev/boot.txt, words on one line
-// (`samples=2 width=960 height=540 title=0`).
+// (`samples=2 width=960 height=540 title=0 interval=0`). `interval=0` shows frames as they are drawn and not
+// one a refresh of the panel, which is how a panel that refreshes faster than 60 times a second hands them
+// back: the shell's own pace (`pace`) can then be read on a 60 Hz panel.
 static void boot_words(void) {
   size_t size;
   char path[700];
@@ -556,6 +641,8 @@ static void boot_words(void) {
       buffer_w = atoi(word + 6);
     else if (!strncmp(word, "height=", 7))
       buffer_h = atoi(word + 7);
+    else if (!strncmp(word, "interval=", 9))
+      swap_interval = atoi(word + 9);
     else if (!strcmp(word, "title=0"))
       skip_card = true;
   }
@@ -575,12 +662,12 @@ static void turn(unsigned ticks, bool always) {
     fingers.count = 0;
   for (int i = 0; i < 4; i++) {
     if (i < fingers.count)
-      pocket_contact_event(&touches, i < fingered.count ? POCKET_TOUCH_MOVE : POCKET_TOUCH_DOWN, -1 - i, fingers.at[i][0], fingers.at[i][1], panel_w, panel_h);
+      pocket_contact_event(&touches, i < fingered.count ? POCKET_TOUCH_MOVE : POCKET_TOUCH_DOWN, -1 - i, fingers.at[i][0], fingers.at[i][1], view.w, view.h);
     else if (i < fingered.count)
-      pocket_contact_event(&touches, POCKET_TOUCH_UP, -1 - i, fingered.at[i][0], fingered.at[i][1], panel_w, panel_h);
+      pocket_contact_event(&touches, POCKET_TOUCH_UP, -1 - i, fingered.at[i][0], fingered.at[i][1], view.w, view.h);
   }
   fingered = fingers;
-  pocket_contacts_sample(&touches, &input, panel_w, panel_h, LOGICAL_WIDTH, LOGICAL_HEIGHT, pocket_runtime_hit_test_bounds);
+  pocket_contacts_sample(&touches, &input, view.w, view.h, LOGICAL_WIDTH, LOGICAL_HEIGHT, pocket_runtime_hit_test_bounds);
   // (a finger that has just lifted still has its end to deliver)
   bool touching = input.contact_count || input.cancelled_count;
   if (!always && !tk_guest_due(0, touching))
@@ -597,7 +684,7 @@ static void turn(unsigned ticks, bool always) {
   }
 }
 
-// The interface over what the frame holds.
+// The interface over what the frame holds, in the picture.
 static void interface_draw(void) {
   if (!guest || hidden)
     return;
@@ -606,12 +693,38 @@ static void interface_draw(void) {
   glUseProgram(0);
   glActiveTexture(GL_TEXTURE0);
   glDepthMask(GL_TRUE);
-  ui_gl_render_over(0, 0, width, height, width, height);
+  ui_gl_render_over(view.x, height - view.y - view.h, view.w, view.h, width, height);
+}
+
+// A panel that refreshes faster than 60 times a second (90, 120, 144 Hz) hands a frame back sooner than a
+// sixtieth of a second after the one before, and the flight takes a tick a frame. The window asks the system
+// for 60 Hz (`make_surface`); where frames still come back sooner, each waits for its sixtieth. `early` counts
+// up with a frame that came back within 0.85 of a refresh of the last one's start and down with one that did
+// not, and the wait is on from 30: a 60 Hz panel hands back two or three such frames after a late one, and
+// never thirty more than it hands back on time.
+static void pace(void) {
+  static double last;
+  static unsigned early;
+  double start = now();
+  if (last && start - last < 0.5) {
+    bool soon = (start - last) * 1000 < REFRESH_MS * 0.85;
+    early = soon ? (early < 60 ? early + 1 : 60) : early ? early - 1 : 0;
+    paced = early >= 30;
+    if (paced && soon) {
+      // The sixtieths are counted from the frame before, so that the waits do not add up.
+      double due = last + REFRESH_MS / 1000, left = due - start;
+      struct timespec wait = {0, (long)(left * 1e9)};
+      nanosleep(&wait, NULL);
+      start = now() - due < 0.004 ? due : now();
+    }
+  }
+  last = start;
 }
 
 static void frame(void) {
   static double previous, shown_at;
   static float sums[5];
+  pace();
   double start = now();
   if (!previous || start - previous > 0.5)
     previous = start - REFRESH_MS / 1000;
@@ -713,8 +826,19 @@ static void frame(void) {
     stepped = now();
     turn(2, true);
     turned = now();
-    glClearColor(0.09f, 0.07f, 0.15f, 1);
-    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
+    if (view.w == width && view.h == height) {
+      glClearColor(0.09f, 0.07f, 0.15f, 1);
+      glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
+    } else {
+      // Black beside the picture, the card's ground in it.
+      glClearColor(0, 0, 0, 1);
+      glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
+      glEnable(GL_SCISSOR_TEST);
+      glScissor(view.x, view.y, view.w, view.h);
+      glClearColor(0.09f, 0.07f, 0.15f, 1);
+      glClear(GL_COLOR_BUFFER_BIT);
+      glDisable(GL_SCISSOR_TEST);
+    }
     drawn = now();
   }
   interface_draw();
@@ -843,6 +967,11 @@ void android_main(struct android_app *a) {
     }
     if (stage == FAILED && failure[0] && frames == 0)
       LOG("failed: %s", failure);
+    // Twice a second, and in each of the first frames: has the system given the window another size?
+    static unsigned loops;
+    if (loops < 8 || loops % 30 == 0)
+      resized();
+    loops++;
     frame();
   }
 }

@@ -1,11 +1,12 @@
-# Pocket Tokyo on the Redmi 1S: the city on an Adreno 305 through OpenGL ES 3.0,
-# behind the C interface the shell in ../src calls (`tk_*`, declared in
+# Pocket Tokyo on Android, measured on the Redmi 1S: the city on an Adreno 305
+# through OpenGL ES 3.0, behind the C interface the shell in ../src calls (`tk_*`, declared in
 # ../src/core.h). The pack, what a frame draws, the shadows' sweep, the traffic,
 # the flow around the flight and the interface's channel are here; the window,
 # the touches and the PocketJS guest are the shell's.
 #
 # Standalone workspace: tools/android.ts builds it for armv7-linux-androideabi
-# with the nightly compiler PocketJS's UI core is built with.
+# and for aarch64-linux-android with the nightly compiler PocketJS's UI core is
+# built with.
 
 [package]
 name = "tokyo-android-core"

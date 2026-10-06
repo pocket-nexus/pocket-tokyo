@@ -1,5 +1,5 @@
-//! Pocket Tokyo on the Redmi 1S, behind the C interface of the shell
-//! (`../../src/core.h` declares the same functions).
+//! Pocket Tokyo on Android, measured on the Redmi 1S, behind the C interface of
+//! the shell (`../../src/core.h` declares the same functions).
 //!
 //! The shell owns the window, the EGL context, the touches and the PocketJS
 //! guest. This library owns the city: the pack, the OpenGL ES 3.0 programs and
@@ -90,7 +90,8 @@ struct App {
     stats: Stats,
     light: sky::Light,
     seconds: f32,
-    /// The window in pixels.
+    /// The picture: its lower left corner in the window's buffer, and its size, in pixels.
+    at: (i32, i32),
     size: (u32, u32),
     /// The governor: how far the distances of the levels of detail are in, and frames they stay in
     /// after a late frame.
@@ -109,7 +110,7 @@ struct App {
 
 static mut LOADER: Option<Loader> = None;
 static mut APP: Option<App> = None;
-static mut SIZE: (u32, u32) = (1280, 720);
+static mut VIEW: (i32, i32, u32, u32) = (0, 0, 1280, 720);
 
 fn started() -> Option<&'static mut App> {
     unsafe { (*core::ptr::addr_of_mut!(APP)).as_mut() }
@@ -203,11 +204,15 @@ pub extern "C" fn tk_interface_open() -> u32 {
     unsafe { channel() }.is_open() as u32
 }
 
-/// The window's size in pixels, whenever the shell has made its surface.
+/// The picture in the window's buffer, whenever the shell has made its surface or the window has changed:
+/// the lower left corner and the size of the rectangle the city is drawn into, in pixels. On a 1280 × 720
+/// window it is the whole buffer; in a window of another shape the shell gives a 16:9 rectangle about the
+/// middle.
 #[no_mangle]
-pub extern "C" fn tk_window(width: u32, height: u32) {
-    unsafe { SIZE = (width, height) };
+pub extern "C" fn tk_window(x: i32, y: i32, width: u32, height: u32) {
+    unsafe { VIEW = (x, y, width, height) };
     if let Some(a) = started() {
+        a.at = (x, y);
         a.size = (width, height);
     }
 }
@@ -299,7 +304,8 @@ unsafe fn start(mut city: CityGpu) -> Result<(), String> {
         stats: Stats::default(),
         light,
         seconds: 0.0,
-        size: SIZE,
+        at: (VIEW.0, VIEW.1),
+        size: (VIEW.2, VIEW.3),
         scale: 1.0,
         hold: 0,
         haze: 0.00022,
@@ -401,7 +407,7 @@ pub unsafe extern "C" fn tk_draw(perf: *const Perf) {
     // (`tiny=1`: the frame into a sixteenth of the window each way, to measure what its geometry costs
     // without its pixels)
     let tiny = a.flight.number(tokyo_sim::flight::name(b"tiny"), 0.0) != 0.0;
-    gl::glViewport(0, 0, a.size.0 as i32 / if tiny { 16 } else { 1 }, a.size.1 as i32 / if tiny { 16 } else { 1 });
+    gl::glViewport(a.at.0, a.at.1, a.size.0 as i32 / if tiny { 16 } else { 1 }, a.size.1 as i32 / if tiny { 16 } else { 1 });
     gl::glDisable(gl::BLEND);
     gl::glDisable(gl::SCISSOR_TEST);
     gl::glDisable(gl::STENCIL_TEST);

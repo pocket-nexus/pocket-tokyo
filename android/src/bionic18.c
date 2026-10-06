@@ -1,5 +1,7 @@
 // Five functions Rust's standard library links against and Android 4.3's C library (API 18) does not
 // have. They are declared here by hand: the NDK's headers for this API level hide or inline them.
+// tools/android.ts compiles this file into the `armeabi-v7a` engine alone: the `arm64-v8a` engine links
+// against API 21, whose C library has all five, and `open` there takes any offset without a flag.
 #include <stdarg.h>
 #include <stddef.h>
 

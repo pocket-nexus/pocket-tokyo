@@ -1,15 +1,20 @@
 #!/usr/bin/env bun
 /**
- * Pocket Tokyo on the Redmi 1S (Android 4.3, Adreno 305): cook, build, package,
- * install, drive and measure. The app is one NativeActivity: the C in
- * android/src, the Rust core in android/core and the interface in ui/, with
- * PocketJS's UI core, QuickJS and guest driver linked in. The NDK compiles
- * and links it and the SDK's build tools package it; there is no Java and no
- * Gradle.
+ * Pocket Tokyo as an Android app: cook, build, package, install, drive and
+ * measure. The phone it is measured on is the Redmi 1S (Android 4.3, Adreno
+ * 305). The app is one NativeActivity: the C in android/src, the Rust core in
+ * android/core and the interface in ui/, with PocketJS's UI core, QuickJS and
+ * guest driver linked in. The NDK compiles and links it and the SDK's build
+ * tools package it; there is no Java and no Gradle.
+ *
+ * One package holds two sets of libraries (`ABIS`): `armeabi-v7a` against
+ * Android 4.3's C library, which the Redmi 1S loads, and `arm64-v8a` against
+ * Android 5.0's, which a 64-bit phone loads. The manifest's minSdkVersion is
+ * 18 and its targetSdkVersion 34.
  *
  *   bun tools/android.ts doctor                  the tools and the phone this needs
  *   bun tools/android.ts cook [--area shiba]     the city for profiles/redmi1s60.json → .pocket-build/city/<area>/redmi1s60/city.pack
- *   bun tools/android.ts build                   the two libraries and the interface → .pocket-build/android/
+ *   bun tools/android.ts build                   the two libraries of each ABI and the interface → .pocket-build/android/
  *   bun tools/android.ts apk                     build, then the signed package with the pack inside → dist/android/PocketTokyo.apk
  *   bun tools/android.ts install                 apk, then `adb install`, answering MIUI's two questions on the phone
  *   bun tools/android.ts apk --release           the package members install → dist/android/PocketTokyo-release.apk
@@ -33,7 +38,7 @@
  * first line of the `.password` file beside it. A phone installs a package over an installed one only under
  * the same certificate: a development package is uninstalled before a release goes on, and the other way round.
  *
- * The phone is the one device `adb` lists (or ANDROID_SERIAL).
+ * The phone is the one device `adb` lists (or ANDROID_SERIAL). `native` sends the engine of the phone's own ABI.
  */
 import { createHash, randomBytes } from "node:crypto";
 import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
@@ -58,20 +63,49 @@ const pocket = join(root, "vendor/pocketjs");
 const id = "dev.pocketnexus.tokyo";
 const version = { code: 1, name: "0.1.0" };
 
-/** What builds for Android 4.3 on ARMv7: the NDK that still has API 18, and the compiler PocketJS's UI core is built with. */
+/**
+ * What builds the package: the NDK that still has API 18, and the compiler PocketJS's UI core is built with.
+ * `api` is the manifest's minSdkVersion and `target` its targetSdkVersion: Android 14 installs no package that
+ * targets less than 23, and Android 15 none under 24.
+ */
 const TOOLCHAIN = {
   sdk: process.env.ANDROID_HOME ?? "/opt/homebrew/share/android-commandlinetools",
   ndk: "21.4.7075529",
   buildTools: "34.0.0",
   platform: "android-34",
   api: 18,
+  target: 34,
   rust: "nightly-2026-07-02",
-  rustTarget: "armv7-linux-androideabi",
   quickjs: { version: "2026-06-04", repository: "https://github.com/pocket-nexus/quickjs-rs.git", revision: "ba5bdd0dc013518768e76cd9e05cd30ed53dd35b" },
 };
 const ndk = join(TOOLCHAIN.sdk, "ndk", TOOLCHAIN.ndk);
 const llvm = join(ndk, "toolchains/llvm/prebuilt", process.platform === "darwin" ? "darwin-x86_64" : "linux-x86_64", "bin");
-const clang = join(llvm, `armv7a-linux-androideabi${TOOLCHAIN.api}-clang`);
+/**
+ * The package's libraries, one set for each ABI, in the order of the ABIs' names.
+ *
+ * `armeabi-v7a` is the Redmi 1S's: linked against Android 4.3's C library (API 18) with the five functions of
+ * android/src/bionic18.c, and compiled for the Cortex-A7's NEON and fused multiply-add. `arm64-v8a` is linked
+ * against API 21, the first with 64-bit libraries, with its segments aligned to 16 KB: a phone whose pages are
+ * 16 KB loads no library aligned to 4 KB.
+ */
+interface Abi {
+  abi: string;
+  clang: string;
+  rust: string;
+  rustFlags: string;
+  machine: string[];
+  link: string[];
+  /** Sources of this ABI alone, compiled into the engine. */
+  shims: string[];
+}
+const ABIS: Abi[] = [
+  { abi: "arm64-v8a", clang: join(llvm, "aarch64-linux-android21-clang"), rust: "aarch64-linux-android", rustFlags: "", machine: [], link: ["-Wl,-z,max-page-size=16384"], shims: [] },
+  {
+    abi: "armeabi-v7a", clang: join(llvm, `armv7a-linux-androideabi${TOOLCHAIN.api}-clang`), rust: "armv7-linux-androideabi", rustFlags: "-C target-cpu=cortex-a7 -C target-feature=+neon,+vfp4",
+    // The Cortex-A7 has NEON and a fused multiply-add: scalar float goes through them.
+    machine: ["-mcpu=cortex-a7", "-mfpu=neon-vfpv4", "-mfloat-abi=softfp", "-mthumb"], link: [], shims: ["android/src/bionic18.c"],
+  },
+];
 const glue = join(ndk, "sources/android/native_app_glue");
 const buildTools = join(TOOLCHAIN.sdk, "build-tools", TOOLCHAIN.buildTools);
 const androidJar = join(TOOLCHAIN.sdk, "platforms", TOOLCHAIN.platform, "android.jar");
@@ -168,11 +202,12 @@ async function install(file: string) {
 
 function doctor(): boolean {
   const checks: [string, boolean, string][] = [
-    ["NDK clang for API 18", existsSync(clang), clang],
+    ...ABIS.map((abi): [string, boolean, string] => [`NDK clang (${abi.abi})`, existsSync(abi.clang), abi.clang]),
     ["native_app_glue", existsSync(join(glue, "android_native_app_glue.c")), glue],
     ["aapt, zipalign, apksigner", ["aapt", "zipalign", "apksigner"].every((t) => existsSync(join(buildTools, t))), buildTools],
     ["android.jar", existsSync(androidJar), androidJar],
-    ["Rust target", run(["rustup", "target", "list", "--installed", "--toolchain", TOOLCHAIN.rust]).split("\n").includes(TOOLCHAIN.rustTarget), `${TOOLCHAIN.rustTarget} on ${TOOLCHAIN.rust}`],
+    ...ABIS.map((abi): [string, boolean, string] => [`Rust target (${abi.abi})`, run(["rustup", "target", "list", "--installed", "--toolchain", TOOLCHAIN.rust]).split("\n").includes(abi.rust),
+      `${abi.rust} on ${TOOLCHAIN.rust}: rustup target add ${abi.rust} --toolchain ${TOOLCHAIN.rust}`]),
     ["PocketJS's packages", existsSync(join(pocket, "node_modules")), "bun install in vendor/pocketjs"],
     ["the city's pack", existsSync(pack), pack],
   ];
@@ -196,59 +231,76 @@ function cook() {
     "--profile", "profiles/redmi1s60.json", "--area", `areas/${area}.json`]));
 }
 
-async function build(): Promise<{ engine: string; loader: string; ui: string; build: string }> {
-  if (!existsSync(clang)) throw new Error(`no NDK ${TOOLCHAIN.ndk}: sdkmanager "ndk;${TOOLCHAIN.ndk}"`);
+/** The engine and the loader of one ABI, as the package holds them. */
+interface Libraries {
+  abi: string;
+  engine: string;
+  loader: string;
+}
+
+async function build(): Promise<{ libraries: Libraries[]; ui: string; build: string }> {
+  for (const abi of ABIS) if (!existsSync(abi.clang)) throw new Error(`no NDK ${TOOLCHAIN.ndk}: sdkmanager "ndk;${TOOLCHAIN.ndk}"`);
   const ui = await compileInterface("android", area);
-  const objects = join(out, "objects");
-  mkdirSync(objects, { recursive: true });
   ensureQuickJsCheckout("Pocket Tokyo", quickJsRoot, TOOLCHAIN.quickjs);
   const quickjs = quickJsCheckout(quickJsRoot);
-  const cargo = (directory: string, target: string, extra: string[] = []) =>
-    run(["rustup", "run", TOOLCHAIN.rust, "cargo", "build", "--release", "--target", TOOLCHAIN.rustTarget, ...extra], directory,
-      { CARGO_TARGET_DIR: target, CARGO_TARGET_ARMV7_LINUX_ANDROIDEABI_LINKER: clang, RUSTFLAGS: "-C target-cpu=cortex-a7 -C target-feature=+neon,+vfp4" });
-  // The city: the pack, the frame, the flight and its flow, the title card's frames. It also answers the guest's service wire.
-  cargo(join(root, "android/core"), join(out, "core"));
-  // The interface's runtime, from PocketJS: the UI core as a static library with its OpenGL ES backend.
-  cargo(join(pocket, "engine/ui-cabi"), join(out, "ui-core"), ["--locked", "--features", "bare-platform"]);
-  const libraries = [join(out, "core", TOOLCHAIN.rustTarget, "release/libtokyo_android_core.a"), join(out, "ui-core", TOOLCHAIN.rustTarget, "release/libpocketjs_symbian_core.a")];
-
-  // The Cortex-A7 has NEON and a fused multiply-add: scalar float goes through them.
-  const machine = ["-mcpu=cortex-a7", "-mfpu=neon-vfpv4", "-mfloat-abi=softfp", "-mthumb", "-fPIC", "-ffunction-sections", "-fdata-sections", "-DANDROID"];
-  const compile = (source: string, extra: string[] = [], level = "-O2") => {
-    const object = join(objects, source.replace(/[^A-Za-z0-9]/g, "_").slice(-80) + ".o");
-    run([clang, "-std=gnu11", level, ...machine, ...extra, "-c", source, "-o", object]);
-    return object;
-  };
+  const cargo = (abi: Abi, directory: string, target: string, extra: string[] = []) =>
+    run(["rustup", "run", TOOLCHAIN.rust, "cargo", "build", "--release", "--target", abi.rust, ...extra], directory,
+      { CARGO_TARGET_DIR: target, [`CARGO_TARGET_${abi.rust.toUpperCase().replaceAll("-", "_")}_LINKER`]: abi.clang, RUSTFLAGS: abi.rustFlags });
+  // Rust first, for every ABI: the build's name is made from the libraries it links.
+  const archives = ABIS.map((abi) => {
+    // The city: the pack, the frame, the flight and its flow, the title card's frames. It also answers the guest's service wire.
+    cargo(abi, join(root, "android/core"), join(out, "core"));
+    // The interface's runtime, from PocketJS: the UI core as a static library with its OpenGL ES backend.
+    cargo(abi, join(pocket, "engine/ui-cabi"), join(out, "ui-core"), ["--locked", "--features", "bare-platform"]);
+    return [join(out, "core", abi.rust, "release/libtokyo_android_core.a"), join(out, "ui-core", abi.rust, "release/libpocketjs_symbian_core.a")];
+  });
+  const sources = ["android/src/main.c", "android/src/bionic18.c", "android/src/loader.c", "android/src/core.h"];
+  const build = createHash("sha256").update([...sources.map((f) => join(root, f)), ...archives.flat(), join(ui.directory, "tokyo.js"), join(ui.directory, "tokyo.pak")].map(sha).join() + (release ? " release" : "")).digest("hex").slice(0, 12);
+  const [logicalW, logicalH] = ui.inputs.viewport.logical;
   const includes = ["-I", join(pocket, "engine/quickjs-c"), "-I", join(pocket, "engine/ui-cabi/include"), "-I", join(pocket, "contracts/generated"),
     "-I", join(pocket, "hosts/ios-legacy"), "-I", join(pocket, "hosts/shared"), "-I", join(pocket, "hosts/blackberry-classic"), "-isystem", quickjs.source, "-I", glue];
-  const guest = [
-    ...["quickjs.c", "cutils.c", "dtoa.c", "libregexp.c", "libunicode.c"].map((f) => compile(join(quickjs.source, f),
-      ["-I", quickjs.source, "-funsigned-char", "-fno-strict-aliasing", "-fwrapv", "-D_GNU_SOURCE", "-w", `-DCONFIG_VERSION="${TOOLCHAIN.quickjs.version}"`])),
-    compile(quickjs.staticFunctions, ["-I", quickjs.source, "-funsigned-char", "-D_GNU_SOURCE", "-w", `-DCONFIG_VERSION="${TOOLCHAIN.quickjs.version}"`]),
-    // The guest's service ops go to the svcwire_* functions, which the core answers in the process.
-    compile(join(pocket, "engine/quickjs-c/pocket_runtime.c"), [...includes, "-DPOCKET_SVC_WIRE", `-DPOCKETJS_TARGET_ID="${ui.inputs.target}"`,
-      `-DPOCKETJS_HOST_ABI=${ui.inputs.hostAbi}`, `-DPOCKET_RASTER_DENSITY=${ui.inputs.viewport.rasterDensity}`]),
-  ];
-  const sources = ["android/src/main.c", "android/src/bionic18.c", "android/src/loader.c", "android/src/core.h"];
-  const build = createHash("sha256").update([...sources.map((f) => join(root, f)), ...libraries, join(ui.directory, "tokyo.js"), join(ui.directory, "tokyo.pak")].map(sha).join() + (release ? " release" : "")).digest("hex").slice(0, 12);
-  const [logicalW, logicalH] = ui.inputs.viewport.logical;
   // A release never looks in files/dev (android/src/main.c, android/src/loader.c).
   const door = release ? ["-DTOKYO_RELEASE"] : [];
   const strict = ["-Wall", "-Wextra", "-Werror", "-Wno-unused-parameter", ...door, `-DTOKYO_BUILD="${build}"`, `-DLOGICAL_WIDTH=${logicalW}`, `-DLOGICAL_HEIGHT=${logicalH}`, ...includes];
   for (const key of ["--samples", "--buffer-width", "--buffer-height"])
     if (option(key)) strict.push(`-D${key.slice(2).replace("-", "_").toUpperCase()}=${option(key)}`);
-  const own = [compile(join(root, "android/src/main.c"), strict, "-O3"), compile(join(root, "android/src/bionic18.c"), ["-Wall", "-Wextra", "-Werror"]),
-    compile(join(glue, "android_native_app_glue.c"), ["-I", glue])];
-  const staged = join(out, "apk/lib/armeabi-v7a");
-  mkdirSync(staged, { recursive: true });
-  const engine = join(staged, "libtokyo-engine.so"), loader = join(staged, "libtokyo.so");
-  // `--no-undefined`: a function this Android does not have fails here, not when the phone loads the library.
-  run([clang, "-shared", "-Wl,--no-undefined", "-Wl,--gc-sections", "-Wl,-soname,libtokyo-engine.so", "-u", "ANativeActivity_onCreate", "-o", engine,
-    ...own, ...guest, libraries[0], libraries[1], "-landroid", "-llog", "-lEGL", "-lGLESv3", "-ldl", "-lm"]);
-  run([clang, "-shared", "-Wl,--no-undefined", "-Wl,-soname,libtokyo.so", "-o", loader, compile(join(root, "android/src/loader.c"), ["-Wall", "-Wextra", "-Werror", ...door]), "-landroid", "-llog", "-ldl"]);
-  for (const library of [engine, loader]) run([join(llvm, "llvm-strip"), "--strip-unneeded", library]);
-  console.log(JSON.stringify({ build, engine: statSync(engine).size, loader: statSync(loader).size, interface: `${logicalW}×${logicalH} @${ui.inputs.viewport.rasterDensity}x` }));
-  return { engine, loader, ui: ui.directory, build };
+
+  const libraries = ABIS.map((abi, at): Libraries => {
+    const objects = join(out, "objects", abi.abi);
+    mkdirSync(objects, { recursive: true });
+    const machine = [...abi.machine, "-fPIC", "-ffunction-sections", "-fdata-sections", "-DANDROID"];
+    const compile = (source: string, extra: string[] = [], level = "-O2") => {
+      const object = join(objects, source.replace(/[^A-Za-z0-9]/g, "_").slice(-80) + ".o");
+      run([abi.clang, "-std=gnu11", level, ...machine, ...extra, "-c", source, "-o", object]);
+      return object;
+    };
+    const guest = [
+      ...["quickjs.c", "cutils.c", "dtoa.c", "libregexp.c", "libunicode.c"].map((f) => compile(join(quickjs.source, f),
+        ["-I", quickjs.source, "-funsigned-char", "-fno-strict-aliasing", "-fwrapv", "-D_GNU_SOURCE", "-w", `-DCONFIG_VERSION="${TOOLCHAIN.quickjs.version}"`])),
+      compile(quickjs.staticFunctions, ["-I", quickjs.source, "-funsigned-char", "-D_GNU_SOURCE", "-w", `-DCONFIG_VERSION="${TOOLCHAIN.quickjs.version}"`]),
+      // The guest's service ops go to the svcwire_* functions, which the core answers in the process.
+      compile(join(pocket, "engine/quickjs-c/pocket_runtime.c"), [...includes, "-DPOCKET_SVC_WIRE", `-DPOCKETJS_TARGET_ID="${ui.inputs.target}"`,
+        `-DPOCKETJS_HOST_ABI=${ui.inputs.hostAbi}`, `-DPOCKET_RASTER_DENSITY=${ui.inputs.viewport.rasterDensity}`]),
+    ];
+    const own = [compile(join(root, "android/src/main.c"), strict, "-O3"), ...abi.shims.map((shim) => compile(join(root, shim), ["-Wall", "-Wextra", "-Werror"])),
+      compile(join(glue, "android_native_app_glue.c"), ["-I", glue])];
+    const staged = join(out, "apk/lib", abi.abi);
+    mkdirSync(staged, { recursive: true });
+    const engine = join(staged, "libtokyo-engine.so"), loader = join(staged, "libtokyo.so");
+    // `--no-undefined`: a function this ABI's Android does not have fails here, not when a phone loads the library.
+    run([abi.clang, "-shared", "-Wl,--no-undefined", "-Wl,--gc-sections", "-Wl,-soname,libtokyo-engine.so", ...abi.link, "-u", "ANativeActivity_onCreate", "-o", engine,
+      ...own, ...guest, ...archives[at], "-landroid", "-llog", "-lEGL", "-lGLESv3", "-ldl", "-lm"]);
+    run([abi.clang, "-shared", "-Wl,--no-undefined", "-Wl,-soname,libtokyo.so", ...abi.link, "-o", loader, compile(join(root, "android/src/loader.c"), ["-Wall", "-Wextra", "-Werror", ...door]), "-landroid", "-llog", "-ldl"]);
+    for (const library of [engine, loader]) {
+      run([join(llvm, "llvm-strip"), "--strip-unneeded", library]);
+      // A segment of a 64-bit library starts on a 16 KB boundary of the file, or a phone with 16 KB pages refuses it.
+      const narrow = abi.abi === "arm64-v8a" ? run([join(llvm, "llvm-readelf"), "-lW", library]).split("\n").filter((l) => /^\s*LOAD\s/.test(l) && Number(l.trim().split(/\s+/).pop()) % 0x4000 !== 0) : [];
+      if (narrow.length) throw new Error(`${library}: a segment is not aligned to 16 KB:\n${narrow.join("\n")}`);
+    }
+    return { abi: abi.abi, engine, loader };
+  });
+  console.log(JSON.stringify({ build, libraries: Object.fromEntries(libraries.map((l) => [l.abi, { engine: statSync(l.engine).size, loader: statSync(l.loader).size }])), interface: `${logicalW}×${logicalH} @${ui.inputs.viewport.rasterDensity}x` }));
+  return { libraries, ui: ui.directory, build };
 }
 
 /**
@@ -292,25 +344,33 @@ async function packageApk() {
   for (const file of ["tokyo.js", "tokyo.pak"]) cpSync(join(built.ui, file), join(assets, file));
   cpSync(pack, join(assets, "city.pack"));
   const manifest = join(staging, "AndroidManifest.xml");
-  writeFileSync(manifest, readFileSync(join(root, "android/AndroidManifest.xml"), "utf8").replace("@VERSION_CODE@", String(version.code)).replace("@VERSION_NAME@", version.name).replace("@DEBUGGABLE@", String(!release)));
+  writeFileSync(manifest, readFileSync(join(root, "android/AndroidManifest.xml"), "utf8").replace("@VERSION_CODE@", String(version.code)).replace("@VERSION_NAME@", version.name)
+    .replace("@MIN_SDK@", String(TOOLCHAIN.api)).replace("@TARGET_SDK@", String(TOOLCHAIN.target)).replace("@DEBUGGABLE@", String(!release)));
   const unsigned = join(out, "unsigned.apk"), aligned = join(out, "aligned.apk");
   // `-0 pack`: the pack is stored as it is, so the app reads it in place through a file descriptor.
+  // `-0 arsc`: Android 11 and later install a package that targets 30 or more only with its resource table stored.
   // `--no-crunch`: the icons go in as PocketJS's files are, byte for byte.
-  run([join(buildTools, "aapt"), "package", "-f", "--no-crunch", "-0", "pack", "-M", manifest, "-S", res, "-A", assets, "-I", androidJar, "-F", unsigned]);
+  run([join(buildTools, "aapt"), "package", "-f", "--no-crunch", "-0", "pack", "-0", "arsc", "-M", manifest, "-S", res, "-A", assets, "-I", androidJar, "-F", unsigned]);
   // aapt dates its entries 1980-01-01. `zip` dates an entry by its file and adds the file's access time; apksigner
-  // dates its own entries by the last one it is given. The libraries take aapt's date and `-X` leaves the access
-  // times out, so two packages of the same contents are the same bytes.
-  for (const library of [built.engine, built.loader]) utimesSync(library, new Date(1980, 0, 1), new Date(1980, 0, 1));
-  run(["zip", "-q", "-X", "-r", unsigned, "lib"], staging);
+  // dates its own entries by the last one it is given. The libraries take aapt's date, `-X` leaves the access
+  // times out and the entries are named in the order of their names, so two packages of the same contents are
+  // the same bytes.
+  const entries = built.libraries.flatMap((l) => [l.engine, l.loader]).map((file) => file.slice(staging.length + 1)).sort();
+  for (const entry of entries) utimesSync(join(staging, entry), new Date(1980, 0, 1), new Date(1980, 0, 1));
+  run(["zip", "-q", "-X", unsigned, ...entries], staging);
   run([join(buildTools, "zipalign"), "-f", "4", unsigned, aligned]);
   mkdirSync(join(root, "dist/android"), { recursive: true });
   cpSync(aligned, apk);
   run([join(buildTools, "apksigner"), "sign", ...key, "--min-sdk-version", String(TOOLCHAIN.api), "--v4-signing-enabled", "false", apk]);
   const badging = run([join(buildTools, "aapt"), "dump", "badging", apk]);
-  for (const mark of [`package: name='${id}'`, `sdkVersion:'${TOOLCHAIN.api}'`, "native-code: 'armeabi-v7a'", "uses-gl-es: '0x30000'"])
+  for (const mark of [`package: name='${id}'`, `sdkVersion:'${TOOLCHAIN.api}'`, `targetSdkVersion:'${TOOLCHAIN.target}'`, `native-code: ${ABIS.map((abi) => `'${abi.abi}'`).join(" ")}`, "uses-gl-es: '0x30000'"])
     if (!badging.includes(mark)) throw new Error(`the package is missing ${mark}`);
   if (badging.includes("application-debuggable") === release) throw new Error(release ? "the release package is debuggable" : "the development package is not debuggable");
-  const receipt = { apk: { path: apk.slice(root.length + 1), bytes: statSync(apk).size, sha256: sha(apk) }, release, build: built.build, pack: { bytes: statSync(pack).size, sha256: sha(pack) }, package: id, version };
+  const receipt = {
+    apk: { path: apk.slice(root.length + 1), bytes: statSync(apk).size, sha256: sha(apk) }, release, build: built.build, pack: { bytes: statSync(pack).size, sha256: sha(pack) }, package: id, version,
+    sdk: { min: TOOLCHAIN.api, target: TOOLCHAIN.target },
+    libraries: Object.fromEntries(built.libraries.map((l) => [l.abi, { engine: { bytes: statSync(l.engine).size, sha256: sha(l.engine) }, loader: { bytes: statSync(l.loader).size, sha256: sha(l.loader) } }])),
+  };
   writeFileSync(join(root, "dist/android", release ? "receipt-release.json" : "receipt.json"), JSON.stringify(receipt, null, 2) + "\n");
   console.log(JSON.stringify(receipt));
 }
@@ -387,7 +447,11 @@ switch (command) {
     break;
   case "native": {
     const built = await build();
-    give(built.engine, "files/dev/libtokyo-engine.so");
+    // The engine of the phone's own ABI: the loader the package installed is that ABI's.
+    const abi = shell("getprop ro.product.cpu.abi").trim();
+    const mine = built.libraries.find((l) => l.abi === abi);
+    if (!mine) throw new Error(`no engine for a phone of ${abi}: the package holds ${built.libraries.map((l) => l.abi).join(" and ")}`);
+    give(mine.engine, "files/dev/libtokyo-engine.so");
     give(join(built.ui, "tokyo.js"), "files/dev/tokyo.js");
     give(join(built.ui, "tokyo.pak"), "files/dev/tokyo.pak");
     if (args.includes("--pack")) give(pack, "files/dev/city.pack");
@@ -421,8 +485,10 @@ switch (command) {
     mkdirSync(validation, { recursive: true });
     shell("screencap -p /sdcard/tokyo-screen.png");
     adb("pull", "/sdcard/tokyo-screen.png", file);
-    // The panel is 720 × 1280; the app holds it a quarter turn over.
-    run(["magick", file, "-rotate", "-90", file]);
+    // Android 4.3 writes the panel as it is built, 720 × 1280, and the app holds it a quarter turn over. A later
+    // Android writes the picture as it is held.
+    const header = readFileSync(file);
+    if (header.readUInt32BE(20) > header.readUInt32BE(16)) run(["magick", file, "-rotate", "-90", file]);
     console.log(file);
     break;
   }
@@ -461,7 +527,7 @@ switch (command) {
       return { min: Math.min(...v), mean: +(v.reduce((a, b) => a + b, 0) / v.length).toFixed(digits), max: Math.max(...v) };
     };
     const result = {
-      build: s.build, seconds, mark: s.mark, latePercent: +((100 * s.mark.late) / Math.max(1, s.mark.frames)).toFixed(2), window: s.window, samples: s.samples, panel: s.panel,
+      build: s.build, seconds, mark: s.mark, latePercent: +((100 * s.mark.late) / Math.max(1, s.mark.frames)).toFixed(2), window: s.window, samples: s.samples, panel: s.panel, view: s.view, paced: s.paced,
       triangles: of((x) => x.drawn), draws: of((x) => x.draws), gpuTimerMs: of((x) => x.gpuTimerMs, 1), scale: of((x) => x.governor.scale, 2), cpuMs: s.cpuMs, governor: s.governor, hours: [samples[0]?.clock?.hour, s.clock?.hour], thermal: of((x) => x.thermal),
       interface: s.interface, memory: s.memory, residentBytes: s.residentBytes,
     };
