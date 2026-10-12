@@ -32,14 +32,14 @@ import init, { Tokyo, shapes } from "./pkg/tokyo_wgpu.js";
 
 // The handhelds: each one's screen is the renderer's shape of the same name, its interface the bundle
 // under ui/<id>/, and `sticks` says how it is flown (README, "Controls"): two sticks, one stick and two
-// buttons to look up and down, or the interface's own stick on a touch panel. `note` is what the player
-// says beside the device's name: how this picture differs from the one that device's own build draws
-// (README, the table of devices).
+// buttons to look up and down, or the interface's own stick on a touch panel. (How each device's own
+// build differs from this picture is in the README's table of devices; the player's mark says one
+// sentence for every device.)
 const DEVICES = [
-  { id: "vita", label: "PS Vita", sticks: 2, note: { en: "On a PS Vita the city has about three times the triangles, traffic on its streets and a glow at night. This page draws the iPod touch build's city.", ja: "PS Vita では街のポリゴン数がおよそ 3 倍になり、通りには車が走り、夜には光がにじみます。このページは iPod touch 版の街を描いています。" } },
-  { id: "psp", label: "PSP", sticks: 1, note: { en: "On a PSP the edges are hard and the light is plainer. This page draws the iPod touch build's city, with smoothed edges.", ja: "PSP では輪郭がぎざぎざになり、光の表現も簡素になります。このページは iPod touch 版の街を、輪郭をなめらかにして描いています。" } },
-  { id: "3ds", label: "Nintendo 3DS", sticks: 1, note: { en: "On a 3DS the edges are hard and the light is plainer. This page draws the iPod touch build's city, with smoothed edges.", ja: "3DS では輪郭がぎざぎざになり、光の表現も簡素になります。このページは iPod touch 版の街を、輪郭をなめらかにして描いています。" } },
-  { id: "ipod", label: "iPod touch", sticks: 0, note: { en: "This page draws the iPod touch build's own pack and passes. On an iPod touch 4 the colours are less precise, and a few frames in a thousand come late.", ja: "このページは iPod touch 版そのもののパックと描画パスで描いています。iPod touch 4 では色の精度が少し低く、1,000 フレームのうち数フレームが遅れます。" } },
+  { id: "vita", label: "PS Vita", sticks: 2 },
+  { id: "psp", label: "PSP", sticks: 1 },
+  { id: "3ds", label: "Nintendo 3DS", sticks: 1 },
+  { id: "ipod", label: "iPod touch", sticks: 0 },
 ];
 // Where the interface's settings are kept between visits (a device keeps them in a file).
 const KEPT = "pocket-tokyo.interface";
