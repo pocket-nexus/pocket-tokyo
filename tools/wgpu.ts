@@ -3,7 +3,7 @@
 // this machine, where a frame goes to a file.
 //
 //   bun tools/wgpu.ts cook                         the city for it: the iPod touch's pack (profiles/ipod60.json)
-//   bun tools/wgpu.ts build                        wasm32 + wasm-bindgen + the page + the interface for the four
+//   bun tools/wgpu.ts build                        wasm32 + wasm-bindgen + the page + the interface for the five
 //                                                  devices (tools/ui.ts) on PocketJS's UI core → .pocket-build/wgpu/site
 //   bun tools/wgpu.ts serve [--port 8787]          the site and the pack, with byte ranges
 //   bun tools/wgpu.ts dist [--piece 2]             the directory a static host serves → .pocket-build/wgpu/dist:
@@ -39,7 +39,7 @@ const SITE = join(BUILD, "site");
 const DIST = join(BUILD, "dist");
 // The handhelds the page shows (`DEVICES` in wgpu/page/main.js, `SHAPES` in wgpu/src/app.rs): the interface
 // is compiled for these. tools/ui.ts knows more devices than a tab shows.
-const SHOWN = ["psp", "vita", "3ds", "ipod"] as const satisfies readonly Device[];
+export const SHOWN = ["psp", "vita", "3ds", "ipod", "android"] as const satisfies readonly Device[];
 // What the host a build is deployed to allows (Pocket Studio's site deployments): the size of a file, the
 // files and the bytes of a deployment, and the top-level names it keeps for itself.
 const HOST = { file: 32 << 20, files: 4000, bytes: 1 << 30, reserved: ["play", "runtime"] };
@@ -532,6 +532,33 @@ if (command === "cook") {
       await p.page.close();
     }
     {
+      // Android phone: the Redmi 1S's panel on its side, 1280 × 720, with the interface at 640 × 360 and no
+      // button. The pointer is a finger: the title's list, a drag across the view, the menu's key.
+      const phone = [640, 360];
+      const p = await visit(`?device=android&words=${encodeURIComponent("hour=21 rate=0 view=230,120,-200,0,150,0")}`);
+      await p.up();
+      await p.mode("title");
+      const shown = (await p.page.evaluate(`[...document.querySelectorAll("[data-pocket-screen]:not([hidden])")].map((c) => [c.dataset.pocketScreen, c.width, c.height])`)) as [string, number, number][];
+      expect(`android: the shell holds one screen of 1280 by 720 (${JSON.stringify(shown)})`, JSON.stringify(shown) === JSON.stringify([["upper", 1280, 720]]));
+      expect("android: a touch panel's shell has no key", (await p.page.locator("[data-pocket-control], [data-pocket-stick], [data-pocket-pad]").count()) === 0);
+      await p.save("android-title");
+      await p.page.screenshot({ path: join(directory, "page-android.png") });
+      await p.tap("upper", phone, 100, 164);
+      await p.mode("flight");
+      await p.page.waitForFunction("pocketTokyo.tokyo.settled()", undefined, { timeout: 90_000 });
+      await p.page.evaluate(`pocketTokyo.tokyo.control("view=off rate=0.03")`);
+      const before = await p.status();
+      expect(`android: the renderer draws the phone's shape (${JSON.stringify(before.shape)})`, before.shape.name === "android" && before.shape.width === 1280 && before.shape.height === 720);
+      await p.save("android-flight");
+      await p.drag("upper", phone, [320, 140], [450, 140]);
+      await p.page.waitForTimeout(300);
+      const looked = await p.status();
+      expect(`android: a finger dragged to the right turns the view to the left (${swing(before.look, looked.look).toFixed(2)} rad)`, swing(before.look, looked.look) < -0.2);
+      report.devices.android = await measure(p);
+      expect(`android: no error on the page (${p.problems.join("; ")})`, p.problems.length === 0);
+      await p.page.close();
+    }
+    {
       // iPod touch: no button at all. The pointer is a finger: the lists, the stick, the keys, the view.
       const held = "hour=21 rate=0 view=230,120,-200,0,150,0";
       const p = await visit(`?device=ipod&words=${encodeURIComponent(held)}`);
@@ -604,7 +631,7 @@ if (command === "cook") {
       { name: "1280", options: { viewport: { width: 1280, height: 800 }, deviceScaleFactor: 1 }, coarse: false },
       { name: "phone", options: { viewport: { width: 390, height: 844 }, deviceScaleFactor: 3, hasTouch: true, isMobile: true }, coarse: true },
     ];
-    const LABELS: Record<string, string> = { vita: "PS Vita", psp: "PSP", "3ds": "Nintendo 3DS", ipod: "iPod touch" };
+    const LABELS: Record<string, string> = { vita: "PS Vita", psp: "PSP", "3ds": "Nintendo 3DS", ipod: "iPod touch", android: "Android phone" };
     for (const window of WINDOWS) {
       const context = await browser.newContext(window.options);
       if (window.coarse) {
@@ -710,10 +737,12 @@ if (command === "cook") {
         }
 
         // From the title into a flight by the shell's own key, which goes down while it is held; then its
-        // stick, whose cap slides. An iPod touch has neither: its screen is under the finger.
-        if (id === "ipod") {
+        // stick, whose cap slides. An iPod touch and an Android phone have neither: the screen is under the finger.
+        if (id === "ipod" || id === "android") {
+          // (the title's second row, in the panel's own pixels: 480 × 320, or 640 × 360 on the phone)
+          const panel = id === "ipod" ? [480, 320] : [640, 360];
           const row = (await p.page.locator("[data-pocket-screen=upper]").boundingBox())!;
-          await held(row.x + (100 / 480) * row.width, row.y + (164 / 320) * row.height, async () => p.page.waitForTimeout(120));
+          await held(row.x + (100 / panel[0]!) * row.width, row.y + (164 / panel[1]!) * row.height, async () => p.page.waitForTimeout(120));
           await p.mode("flight");
           expect(`${tag}: a touch panel's shell has no key`, (await p.page.locator("[data-pocket-control], [data-pocket-stick], [data-pocket-pad]").count()) === 0);
         } else {
@@ -758,7 +787,7 @@ if (command === "cook") {
           await p.mode("menu");
         }
         // The keys, as a list of the player's own.
-        if (!window.coarse && id !== "ipod") {
+        if (!window.coarse && id !== "ipod" && id !== "android") {
           await p.page.locator("[data-pocket-open=controls]").click();
           const keys = (await p.page.locator("#pocket-controls").textContent()) ?? "";
           expect(`${tag}: the player lists the device's keys (${keys.slice(0, 60)})`, keys.startsWith(LABELS[id]!) && keys.includes("W A S D") && keys.includes("START"));
@@ -781,7 +810,7 @@ if (command === "cook") {
         // The line about the marks, reachable from the bar.
         await p.page.locator("[data-pocket-open=about]").click();
         const about = (await p.page.locator("#pocket-about").textContent()) ?? "";
-        expect(`${window.name}: the player says whose the devices' names are (${about.slice(0, 80)})`, about.includes("PS Vita, PSP, Nintendo 3DS and iPod touch are trademarks of their owners. Pocket Nexus is not affiliated with them.") && about.includes("Dibad") && about.includes("CC BY 4.0"));
+        expect(`${window.name}: the player says whose the devices' names are (${about.slice(0, 80)})`, about.includes("PS Vita, PSP, Nintendo 3DS, iPod touch and Android are trademarks of their owners. Pocket Nexus is not affiliated with them.") && about.includes("Dibad") && about.includes("CC BY 4.0"));
         await p.page.screenshot({ path: join(directory, `player-${window.name}-about.png`) });
         report.player.about ??= about;
         await p.page.keyboard.press("Escape");

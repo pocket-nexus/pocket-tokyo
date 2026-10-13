@@ -69,6 +69,9 @@ The page shows one handheld at a time. A device is the renderer's shape (`SHAPES
 | PSP | 480 × 272 | `single`, 480 × 272 | 30 | 30 | none |
 | Nintendo 3DS | 400 × 240 | `dual`: 400 × 240 over it, and a 320 × 240 screen under it | 30 | 30 | the lower screen |
 | iPod touch | 480 × 320 | `touch`, 480 × 320 | 60 | 60 | the screen; no buttons |
+| Android phone | 1280 × 720 | `touch-wide`, 640 × 360 at two samples a pixel | 60 | 30 | the screen; no buttons |
+
+**The page plays as every device the game has a package for.** `tools/platforms.test.ts` holds the release's targets (`tools/release.ts`), `DEVICES` and `runsOn` of `page/main.js`, `SHAPES`, the interface bundles of the site (`SHOWN` in `tools/wgpu.ts`) and `<meta name="pocket-devices">` of `page/index.html` to one another; `pocket-studio site` and `pocket-studio package` read that meta. As an Android phone the tab draws the iPod touch's pack at the Redmi 1S's size and budget (160 000 triangles): the phone's own pack (`redmi1s60`) and its OpenGL ES 3 passes are not in the tab. Chrome 154 on an M3 Max, 2026-10-13: 60 frames a second, 0.41 ms a frame, 39 042 triangles in 309 draws on the tour.
 
 **The page is PocketJS's Pocket3D player** (`createPlayer` of the kernel): `wgpu/page/index.html` has an empty body, and `main.js` says what the game is and draws into the player's canvas. The player builds the bar (the game's name, the devices as text, the word **Simulated** beside them, the keys and the notices as panels), the device's shell with the screens in it, and the dock that leads to Pocket Studio. This page has no line of its own: the sources of the city are in the interface's About list, on every device. The player tells the host once a visit that it opened, at the address the host's `/app.json` names (`opened`), and its two doors carry `from=player`; `dist` writes no such address into the page, so the directory on another host tells no one.
 
