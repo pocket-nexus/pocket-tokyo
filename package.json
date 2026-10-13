@@ -9,7 +9,7 @@
     "dev": "bun run --cwd web dev",
     "ui": "bun tools/ui.ts",
     "wgpu": "bun tools/wgpu.ts",
-    "test": "cargo test --workspace && bun test ./tools/icon.test.ts"
+    "test": "cargo test --workspace && bun test ./tools/icon.test.ts ./tools/platforms.test.ts"
   },
   "devDependencies": {
     "@types/bun": "^1.4.2",

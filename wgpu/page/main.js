@@ -14,7 +14,7 @@
 //
 // The address chooses the device and the pack:
 //
-//   ?device=vita|psp|3ds|ipod   the handheld (without it: an iPod touch for a finger, a PS Vita otherwise)
+//   ?device=vita|psp|3ds|ipod|android   the handheld (without it: an iPod touch for a finger, a PS Vita otherwise)
 //   ?size=960x544 &samples=4 &budget=200000 &hz=60   the first device's screen, changed
 //   ?pack=URL                   the pack (an iPod touch pack): its file, on a server that answers byte
 //                               ranges, or the manifest (.json) of one cut into pieces. Without it, the
@@ -40,6 +40,8 @@ const DEVICES = [
   { id: "psp", label: "PSP", sticks: 1 },
   { id: "3ds", label: "Nintendo 3DS", sticks: 1 },
   { id: "ipod", label: "iPod touch", sticks: 0 },
+  // (`mark`: the name the player's line about trademarks gives it)
+  { id: "android", label: "Android phone", sticks: 0, mark: "Android" },
 ];
 // Where the interface's settings are kept between visits (a device keeps them in a file).
 const KEPT = "pocket-tokyo.interface";

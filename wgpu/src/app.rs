@@ -98,11 +98,14 @@ pub struct Shape {
 /// turns a second its host gives the interface (`TURNS` in `psp/src/interface.rs`, `RATE` in
 /// `vita/src/interface.rs`, `rate` in `n3ds/src/guest.c`, `TURN_HZ` in `ipod/src/main.c`).
 /// Whatever the shape, the pack is the one that was opened: a shape changes how much of it a frame draws.
-pub const SHAPES: [Shape; 4] = [
+pub const SHAPES: [Shape; 5] = [
     Shape { name: "psp", width: 480, height: 272, samples: 4, budget: 42_000, hz: 30, turns: 30 },
     Shape { name: "vita", width: 960, height: 544, samples: 4, budget: 200_000, hz: 60, turns: 30 },
     Shape { name: "3ds", width: 400, height: 240, samples: 4, budget: 60_000, hz: 30, turns: 30 },
     Shape { name: "ipod", width: 480, height: 320, samples: 4, budget: 24_000, hz: 60, turns: 60 },
+    // The Redmi 1S: its panel on its side, with the interface at 640 × 360 and two samples a logical pixel
+    // (`BUDGET` in `android/core/src/lib.rs`, `TURN_HZ` in `android/src/main.c`). No pad, as the iPod touch.
+    Shape { name: "android", width: 1280, height: 720, samples: 4, budget: 160_000, hz: 60, turns: 30 },
 ];
 
 impl Shape {
